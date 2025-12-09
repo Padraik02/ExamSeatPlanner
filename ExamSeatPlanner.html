@@ -1,0 +1,2857 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>考場座位隨機分配系統</title>
+    
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- CSV Parser -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.0/papaparse.min.js"></script>
+    <!-- Excel Parser (XLSX) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+
+    <style>
+        :root { 
+            --primary: #007bff;
+            --primary-light: #e7f1ff;
+            --primary-dark: #0056b3;
+            --secondary: #6c757d;
+            --success: #28a745;
+            --success-light: #d4edda;
+            --danger: #dc3545;
+            --danger-light: #f8d7da;
+            --warning: #ffc107;
+            --warning-light: #fff3cd;
+            --download: #28a745;
+            --info: #17a2b8;
+            --bg: #ffffff;
+            --card-bg: #ffffff;
+            --footer-bg: #f1f3f5;
+            --border-color: #e5e8f0;
+            --text-main: #2c3e50;
+            --text-sub: #6c757d;
+            
+            --seat-w: 62px;
+            --seat-h: 40px;
+            --aisle-w: 20px;
+            --row-label-w: 30px;
+        }
+
+        /* 基礎設定 */
+        * { box-sizing: border-box; outline: none; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans TC", "微軟正黑體", sans-serif;
+            background: var(--bg);
+            color: var(--text-main);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 外層包裝，用於掛載 Vue 並處理 Footer 位置 */
+        #app {
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        /* 主內容卡片 */
+        .main-card { 
+            max-width: 1800px; /* 設定最大寬度 */
+            width: 92%;        /* 設定相對寬度 */
+            margin: 0 auto;    /* 置中 */
+            
+            background: transparent;
+            padding: 40px 0;
+            border-radius: 0;
+            box-shadow: none;
+            flex: 1;
+        }
+
+        h1 {
+            font-size: 28px;
+            text-align: center;
+            margin-bottom: 40px;
+            letter-spacing: 1px;
+            color: #212529;
+        }
+
+        /* Stepper 進度條 */
+        .stepper {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 40px;
+            position: relative;
+        }
+        .stepper::before {
+            content: ''; position: absolute; top: 50%; left: 0; right: 0; height: 2px; background: #e9ecef; z-index: 0; transform: translateY(-50%);
+        }
+        .step {
+            position: relative; z-index: 1; background: var(--card-bg); padding: 0 15px;
+            display: flex; flex-direction: column; align-items: center; gap: 8px;
+            cursor: pointer;
+        }
+        .step-circle {
+            width: 32px; height: 32px; border-radius: 50%; background: #e9ecef; color: #999;
+            display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px;
+            border: 2px solid #e9ecef; transition: all 0.3s;
+        }
+        .step-label { font-size: 13px; color: #999; font-weight: 500; }
+        
+        .step.active .step-circle { background: var(--primary); color: white; border-color: var(--primary); box-shadow: 0 0 0 4px var(--primary-light); }
+        .step.active .step-label { color: var(--primary); font-weight: 700; }
+        .step.completed .step-circle { background: var(--success); color: white; border-color: var(--success); }
+        .step.completed .step-label { color: var(--success); }
+
+        /* 佈局系統 RWD */
+        .split-layout {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 24px;
+            align-items: start;
+        }
+
+        /* 過場動畫 */
+        .fade-enter-active,
+        .fade-leave-active {
+            transition: opacity 0.2s ease;
+        }
+
+        .fade-enter-from,
+        .fade-leave-to {
+            opacity: 0;
+        }
+
+        /* 卡片元件 */
+        .card {
+            background: #fff; 
+            /* 建議：邊框改淡一點，或是只保留下邊框，讓視覺更輕量。這裡先維持淡邊框 */
+            border: 1px solid #e9ecef; 
+            border-radius: 12px; 
+            padding: 25px;
+            box-shadow: none; /* 確保內層也沒有陰影，徹底扁平化 */
+            margin-bottom: 30px; /* 增加間距，利用留白來區隔內容 */
+        }
+        .card-header {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+            padding-bottom: 12px; border-bottom: 1px solid #f1f3f5;
+        }.card-header-without-border {
+            display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+        }
+        .card-title { font-size: 18px; font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 8px; }
+        .card-title::before {
+            /* content: "📌"; */
+            content: "◆";
+            font-size: 18px;
+            color: #000;
+        }
+
+        /* 表單元件 */
+        .form-group { margin-bottom: 16px; }
+        .form-label { display: block; font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 6px; }
+        .form-control {
+            width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #ced4da; border-radius: 8px;
+            transition: border-color 0.2s;
+        }
+        .form-control:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+        textarea.form-control { resize: vertical; min-height: 80px; }
+
+        /* 選項說明文字 */
+        .option-desc { font-size: 12px; color: var(--text-sub); margin-top: 6px; line-height: 1.4; padding: 0 4px; }
+
+        /* 按鈕元件 */
+        .btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            padding: 8px 16px; border-radius: 6px; border: 1px solid transparent;
+            font-size: 14px; font-weight: 600; cursor: pointer; 
+            transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.2s, filter 0.2s;
+            background: #f1f3f5; color: var(--text-main);
+        }
+        /* 更新按鈕懸浮效果：放大 1.1 倍並加深顏色 */
+        .btn:hover { 
+            transform: scale(1.1); 
+            filter: brightness(0.9) contrast(1.1); 
+            z-index: 5;
+        }
+        .btn:active { transform: scale(0.95); }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; filter: none; }
+
+        .quiet-btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            padding: 8px 16px; border-radius: 6px; border: 1px solid transparent;
+            font-size: 14px; font-weight: 600; cursor: pointer; 
+            transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.2s, filter 0.2s;
+            background: #f1f3f5; color: var(--text-main);
+        }
+        /* 更新按鈕懸浮效果：加深顏色 */
+        .quiet-btn:hover { 
+            filter: brightness(0.9) contrast(1.1); 
+            z-index: 5;
+        }
+
+        .action-bar .btn {
+            border-radius: 50px; /* 關鍵：設定大圓角 */
+            padding-left: 30px;  /* 增加左右寬度，讓膠囊看起來更修長好看 */
+            padding-right: 30px;
+        }
+        
+        .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+        .btn-success { background: var(--success); color: white; border-color: var(--success); }
+        .btn-danger { background: var(--danger); color: white; border-color: var(--danger); }
+        .btn-outline { background: white; border-color: #dee2e6; color: var(--text-main); }
+
+        /* 綠色 Outline 按鈕 */
+        .btn-outline-download { background: white; border-color: var(--download); color: var(--download); }
+        .btn-outline-download:hover { background: var(--download); color: white; }
+        
+        /* 紅色 Outline 按鈕 */
+        .btn-outline-danger { background: white; border-color: var(--danger); color: var(--danger);}
+        .btn-outline-danger:hover { background: var(--danger); color: white; }
+
+        .btn-sm { padding: 4px 10px; font-size: 12px; }
+        
+        /* 清空名單按鈕 */
+        .btn-clear-list {
+            background: transparent; border: 1px solid #dee2e6; color: #666;
+            padding: 4px 8px; border-radius: 6px; font-size: 12px; cursor: pointer;
+            transition: all 0.2s; display: inline-flex; align-items: center; gap: 4px;
+        }
+        .btn-clear-list:hover {
+            background: #fff5f5; color: var(--danger); border-color: var(--danger-light);
+            transform: scale(1.05); 
+        }
+
+        /* --- 新增：表格內編輯框樣式 --- */
+        .table-input {
+            width: 100%;
+            padding: 4px 8px;
+            border: 1px solid transparent; /* 平常無邊框 */
+            background: transparent;
+            border-radius: 4px;
+            font-size: 13px;
+            color: inherit;
+            transition: all 0.2s;
+        }
+        .table-input:focus {
+            background: #fff;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px var(--primary-light);
+        }
+        .duplicate .table-input {
+            background: #fff3cd; /* 重複時維持黃底 */
+        }
+
+        /* 調整一下標頭區塊，讓按鈕排版更好看 */
+        .list-header-toolbar {
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 10px; 
+            flex-wrap: wrap; 
+            gap: 10px;
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        .list-header-left {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        /* 方形刪除按鈕 */
+        .btn-square-danger {
+            background: #fff5f5; border: 1px solid #ffc9c9; color: var(--danger);
+            width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+            font-size: 16px; cursor: pointer; transition: 0.2s; padding: 0;
+        }
+        .btn-square-danger:hover { background: var(--danger); color: white; border-color: var(--danger); transform: scale(1.1); }
+
+        /* 排序按鈕 */
+        /* 讓表格內的按鈕排版 */
+        .btn-sort {
+            background: transparent; border: 1px solid #dee2e6; color: #adb5bd;
+            cursor: pointer; padding: 2px 6px; font-size: 12px; border-radius: 4px;
+        }
+        .btn-sort:hover { color: var(--primary); background: #f1f3f5; border-color: var(--primary); }
+
+        /* 膠囊按鈕群組 */
+        .pill-group { display: flex; gap: 8px; flex-wrap: wrap; }
+        .pill-btn {
+            padding: 8px 16px; border-radius: 50px; border: 1px solid #dee2e6; background: white;
+            font-size: 13px; color: var(--text-sub); cursor: pointer; transition: all 0.2s;
+            display: flex; align-items: center; gap: 6px;
+        }
+        .pill-btn.active { background: var(--primary); color: white; border-color: var(--primary); font-weight: 600; box-shadow: 0 4px 6px rgba(0,123,255,0.2); }
+        .pill-btn:hover:not(.active) { background: #f8f9fa; border-color: #adb5bd; transform: scale(1.05); }
+        
+        /* 紅色膠囊按鈕 (用於清空與移除重複) */
+        .pill-btn.danger {
+            color: #dc3545;
+            border-color: #dc3545;
+        }
+        .pill-btn.danger:hover {
+            background: #dc3545;
+            color: white;
+            border-color: #dc3545;
+            box-shadow: 0 4px 6px rgba(220, 53, 69, 0.2);
+        }
+
+        /* --- [新增] Segmented Control (分段控制器) 樣式 --- */
+        .btn-pill-group {
+            display: inline-flex;
+            border-radius: 999px; /* 膠囊形狀 */
+            border: 1px solid #d1d5db;
+            overflow: hidden;
+            background: #f9fafb;
+            vertical-align: middle;
+        }
+
+        .btn-pill {
+            border: none;
+            border-right: 1px solid #e5e7eb;
+            padding: 8px 16px; /* 稍微增加高度讓點擊更舒適 */
+            background: transparent;
+            font-size: 13px;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-pill:last-child {
+            border-right: none;
+        }
+        
+        /* 滑鼠懸停效果 (非 Active 狀態) */
+        .btn-pill:hover:not(.active):not(:disabled) {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        /* 選中狀態 */
+        .btn-pill.active {
+            background: white;
+            color: var(--primary); /* 使用主題藍色，或用 #111827 (深黑) */
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05); /* 微弱陰影增加立體感 */
+        }
+
+        /* 禁用狀態 */
+        .btn-pill:disabled {
+            color: #d1d5db;
+            cursor: not-allowed;
+            background: #f9fafb;
+        }
+
+        /* 獨立的紅色操作按鈕 (配合新的高度調整) */
+        .btn-action-danger {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 8px 16px; 
+            border-radius: 999px; 
+            border: 1px solid #dc3545;
+            color: #dc3545; 
+            background: white; 
+            font-size: 13px; 
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-action-danger:hover {
+            background: #dc3545; 
+            color: white;
+            box-shadow: 0 2px 5px rgba(220, 53, 69, 0.3);
+        }
+
+        /* 表格內的編輯框：平常看起來像文字，點擊變輸入框 */
+        .table-input {
+            width: 100%;
+            border: 1px solid transparent; /* 平常隱藏邊框 */
+            background: transparent;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 13px;
+            color: inherit;
+            transition: all 0.2s;
+        }
+        .table-input:hover {
+            border-color: #dee2e6; /* 滑鼠移過去顯示淡淡邊框 */
+            background: #f8f9fa;
+        }
+        .table-input:focus {
+            border-color: #80bdff;
+            background: white;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.1);
+        }
+
+        /* Badge 徽章 */
+        .badge {
+            display: inline-block; padding: 3px 8px; font-size: 11px; font-weight: 700;
+            border-radius: 4px; background: #e9ecef; color: var(--text-sub);
+        }
+        .badge-primary { background: var(--primary-light); color: var(--primary); }
+        .badge-success { background: var(--success-light); color: var(--success); }
+        .badge-danger { background: var(--danger-light); color: var(--danger); }
+        .badge-warning { background: var(--warning-light); color: #856404; }
+
+        /* 拖曳上傳區 */
+        .upload-zone {
+            border: 2px dashed #dee2e6; border-radius: 12px; padding: 30px 20px;
+            text-align: center; cursor: pointer; transition: all 0.2s; background: #fafbfc;
+        }
+        .upload-zone:hover, .upload-zone.drag-active { border-color: var(--primary); background: var(--primary-light); }
+        .upload-icon { font-size: 32px; margin-bottom: 10px; display: block; }
+        
+        /* 教室編輯器 - PowerPoint 風格 */
+        .room-slides-container {
+            display: flex; gap: 12px; overflow-x: auto; padding: 4px 4px 16px 4px;
+            margin-bottom: 20px; scroll-behavior: smooth;
+        }
+        .room-slide {
+            flex: 0 0 160px; height: 110px; background: white; border: 2px solid #e9ecef;
+            border-radius: 10px; padding: 10px; cursor: pointer; position: relative;
+            display: flex; flex-direction: column; justify-content: space-between;
+            transition: all 0.2s;
+        }
+        .room-slide:hover { border-color: #adb5bd; transform: translateY(-2px); }
+        .room-slide.active { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-light); }
+        .room-slide-add {
+            flex: 0 0 140px; /* 跟一般考場卡片差不多寬 */
+            display: flex; 
+            flex-direction: column; /* [新增] 垂直排列 */
+            align-items: center; 
+            justify-content: center;
+            gap: 5px; /* [新增] 圖示與文字的間距 */
+            
+            border: 2px dashed #ced4da; 
+            color: #adb5bd; 
+            height: 110px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+            background: #fafbfc;
+        }
+        .room-slide-add:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+            transform: translateY(-2px);
+        }
+        /* 滑鼠移過去的效果 (保持不變，但建議確認一下) */
+        .room-slide-add:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+        .room-slide-info h4 { font-size: 13px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: bold; }
+        .room-slide-stats { font-size: 11px; color: var(--text-sub); }
+        /* 考場切換動畫：Fade + Scale */
+        .room-switch-enter-active,
+        .room-switch-leave-active {
+            transition: all 0.1s ease-out;
+        }
+        .room-switch-enter-from {
+            opacity: 0;
+            transform: translateY(-10px); /* 新考場從上方位置滑入 */
+        }
+        .room-switch-leave-to {
+            opacity: 0;
+            transform: translateY(10px); /* 舊考場往下方位置滑出 */
+        }
+
+        /* 教室工具列 */
+        .tool-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        /* 工具列：變身為卡片的「頁首 (Header)」 */
+        .toolbar {
+            background: #f8f9fa; 
+            padding: 12px; /* 稍微增加一點內距讓它看起來像標題列 */
+            
+            /* 邊框與圓角設定：只留上方圓角 */
+            border: 1px solid #e9ecef;
+            border-bottom: 1px solid #dee2e6; /* 加深分隔線，強化層次感 */
+            border-radius: 12px 12px 0 0; /* 上圓下方 */
+            
+            /* [關鍵] 移除底部間距，讓它貼著下面的網格 */
+            margin-bottom: 0;
+            
+            display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+        }
+        .tool-separator { width: 1px; height: 24px; background: #dee2e6; margin: 0 4px; }
+        .tool-label { font-size: 12px; font-weight: 600; color: var(--text-sub); margin-right: 4px; }
+        .tool-counter {
+            font-weight: 800;
+            font-size: 14px;
+            color: var(--text-main);
+            min-width: 30px; /* 固定最小寬度避免數字變動時按鈕跳動 */
+            text-align: center;
+            user-select: none;
+            display: inline-block;
+        }
+
+        /* 座位網格 */
+        /* 網格編輯器：變身為卡片的「內容 (Body)」 */
+        .grid-editor-wrapper {
+            background: #fff; 
+            
+            /* 邊框設定：移除上方邊框 (避免與 Toolbar 重疊變粗) */
+            border: 1px solid #e9ecef; 
+            border-top: none; 
+            
+            /* 圓角設定：只留下方圓角 */
+            border-radius: 0 0 12px 12px; /* 上方下圓 */
+            
+            padding: 30px;
+            overflow: auto; 
+            min-height: 400px; 
+            
+            display: block; 
+            text-align: center; 
+        }
+        .grid-layout { 
+            display: inline-grid; /* 變成行內元素，接受父層的 text-align 置中 */
+            padding: 10px 0px 10px 0px;
+            gap: 4px; 
+            align-items: center; 
+            justify-items: center;
+            vertical-align: top;  /* 確保垂直對齊 */
+        }
+        .fading-out {
+            animation: animFadeOut 0.3s ease-out forwards;
+            pointer-events: none;
+        }
+        @keyframes animFadeOut {
+            0% { opacity: 1; transform: scale(1); background-color: #ffebee; }
+            100% { opacity: 0; transform: scale(0.5); background-color: #ffebee; }
+        }
+
+        /* [新增] 新增時的過場 (藍底彈入) */
+        .pop-in {
+            animation: animPopIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; /* 使用貝茲曲線營造彈跳感 */
+        }
+        @keyframes animPopIn {
+            0% { opacity: 0; transform: scale(0.5); background-color: #e3f2fd; }
+            100% { opacity: 1; transform: scale(1); background-color: transparent; }
+        }
+        .seat {
+            width: var(--seat-w); height: var(--seat-h);
+            background: white; 
+            border: 1px solid #ced4da; 
+            border-radius: 6px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            font-size: 12px; cursor: pointer; user-select: none; 
+            position: relative;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.2s cubic-bezier(0.25, 0.8, 0.25, 1);
+        }
+        .seat:hover { 
+            border-color: var(--primary); 
+            transform: scale(1.05);
+            z-index: 2; 
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .seat.blocked { 
+            background: #f1f3f5; 
+            border-color: transparent; 
+            color: #adb5bd; 
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.06); /* 內陰影讓它看起來是凹陷/填滿的 */
+            
+            /* 當加上 blocked class 時，執行彈跳填滿動畫 */
+            animation: anim-seat-fill 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+        .seat.blocked:hover { 
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.2); /* 加深內陰影 */
+        }
+        /* Blocked 狀態下的 X 符號動畫 */
+        .seat.blocked span {
+            font-weight: bold;
+            font-size: 14px;
+            animation: anim-pop-in 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        .seat.aisle { visibility: hidden; pointer-events: none; }
+        .seat.student { 
+            background: #e3f2fd; border-color: #90caf9; color: #1565c0;
+        }
+        /* --- 動畫 Keyframes --- */
+        /* 1. 座位填滿動畫：稍微縮小(按壓感)再放大 */
+        @keyframes anim-seat-fill {
+            0% { transform: scale(1); background-color: white; }
+            40% { transform: scale(0.9); background-color: #f1f3f5; } /* 按下去 */
+            100% { transform: scale(1); background-color: #f1f3f5; } /* 彈回來 */
+        }
+        /* 2. 符號彈出動畫：從無到有彈出來 */
+        @keyframes anim-pop-in {
+            0% { opacity: 0; transform: scale(0); }
+            100% { opacity: 1; transform: scale(1); }
+        }
+
+        .s-id { font-weight: 700; font-size: 11px; line-height: 1.2; }
+        .s-name { font-size: 10px; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 95%; }
+        
+        .row-header, .col-header {
+            font-size: 11px; font-weight: 700; color: #adb5bd; text-align: center; padding: 2px;
+            cursor: pointer; transition: color 0.2s;
+        }
+        .row-header:hover, .col-header:hover { color: var(--primary); background: var(--primary-light); border-radius: 4px; }
+        .col-header.aisle-label { writing-mode: vertical-rl; letter-spacing: 2px; font-size: 10px; }
+        .seat-coord { position: absolute; bottom: 2px; right: 2px; font-size: 9px; color: #dee2e6; pointer-events: none; }
+
+        /* 底部操作欄 */
+        .action-bar {
+            margin-top: 30px; padding-top: 20px; padding-bottom: 50px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+
+        /* 統計與提示 */
+        /* 容器改為橫向排列，並允許換行 */
+        .stats-chip-container {
+            display: flex; 
+            flex-direction: row;  /* 關鍵：橫向 */
+            flex-wrap: wrap;      /* 關鍵：空間不足時自動換行 */
+            gap: 10px;            /* 膠囊之間的間距 */
+            align-items: center;
+        }
+        /* 膠囊樣式：移除固定寬度，改為自動適應 */
+        .stats-chip {
+            display: inline-flex; 
+            align-items: center; 
+            gap: 8px; 
+            padding: 6px 16px;
+            background: #f1f3f5;
+            border: 1px solid #e5e7eb;
+            border-radius: 50px;
+            font-size: 13px; 
+            color: #495057;
+            width: auto;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+        .stats-chip {
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+        }
+        /* 讓數字更明顯一點 */
+        .stats-chip strong {
+            font-weight: 800;
+            color: #212529;
+            font-size: 14px;
+            margin: 0 2px;
+        }
+        /* 圓點微調 */
+        .dot { 
+            width: 10px; 
+            height: 10px; 
+            border-radius: 50%; 
+            flex-shrink: 0; /* 防止圓點被壓縮 */
+        }
+        .dot.green { background: var(--success); }
+        .dot.red { background: var(--danger); }
+        .dot.blue { background: var(--primary); }
+        .dot.black { background: #333; }
+
+        .hint-box {
+            background: #fff3cd; border: 1px solid #ffeeba; color: #856404;
+            padding: 10px 15px; border-radius: 8px; font-size: 13px; margin-top: 10px;
+            display: flex; gap: 8px; align-items: start;
+        }
+
+        .status-msg {
+            text-align: center; padding: 8px; border-radius: 8px; margin-top: 8px; font-weight: bold; font-size: 13px;
+        }
+        .status-msg.error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; }
+        .status-msg.success { background: #e8f5e9; color: #2e7d32; border: 1px solid #c8e6c9; }
+        .status-msg.neutral { background: #f5f5f5; color: #333; border: 1px solid #e0e0e0; }
+
+        /* 名單預覽表格 */
+        .student-table-container {
+            max-height: 400px; overflow-y: auto; border: 1px solid #e9ecef; border-radius: 8px; margin-top: 15px;
+        }
+        .student-table { width: 100%; font-size: 13px; border-collapse: collapse; }
+        .student-table th { background: #f8f9fa; position: sticky; top: 0; z-index: 1; padding: 10px; text-align: left; border-bottom: 1px solid #dee2e6; }
+        .student-table td { padding: 8px 10px; border-bottom: 1px solid #f1f3f5; }
+        .student-table tr.duplicate { background: #fff3cd; }
+        .btn-del-student { 
+            color: #ccc; background: transparent; border: none; cursor: pointer; font-size: 16px; 
+            width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 4px;
+        }
+        .btn-del-student:hover { color: var(--danger); background: #fff5f5; }
+
+        .pref-layout {
+            display: grid; 
+            grid-template-columns: 200px 1fr; /* 電腦版：左側固定 200px，右側自動 */
+            gap: 30px; 
+            align-items: start;
+        }
+        .header-pulse {
+            animation: pulse-seq 0.6s ease-in-out;
+        }
+        @keyframes pulse-seq {
+            0% { transform: scale(1); color: #666; opacity: 1; } /* 原始狀態 */
+            50% { transform: scale(1.4); color: var(--primary); opacity: 1; } /* 中點：放大變藍 */
+            100% { transform: scale(1); color: #666; opacity: 1; } /* 結束：回歸原始 */
+        }
+        
+        /* 動畫方格 (優化版) */
+        .anim-wrapper {
+            display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; margin: 0px 15px 0px 15px;
+        }
+        .anim-container {
+            width: 100%; max-width: 180px; /* 縮小方格 */
+            aspect-ratio: 1; 
+            display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; /* 放大間距 */
+            background: #fff; padding: 15px; border: 1px solid #e9ecef; border-radius: 12px;
+        }
+        .anim-cell {
+            background: #f1f3f5; border-radius: 4px; transition: all 0.3s;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px; color: #ccc; font-weight: bold;
+            aspect-ratio: 1;
+        }
+        .anim-cell.active {
+            background: #90caf9;
+            color: #fff;
+            transform: scale(1.15);
+            box-shadow: 0 0 8px rgba(144, 202, 249, 0.6); /* 建議：陰影也配合調整成淺藍色暈光 */
+        }
+
+        /* Footer 樣式 */
+        .footer {
+            /* 讓寬度設定與 main-card 完全一致 */
+            max-width: 1800px; 
+            width: 92%;
+            margin: 0 auto;    /* 置中，確保左右留白與上方一致 */
+            
+            background: var(--footer-bg);
+            color: #6c757d;
+            font-size: 0.9rem;
+            padding: 30px 20px;
+            text-align: center;
+            line-height: 1.6;
+            
+            /* 電腦版維持圓角設計 */
+            border-radius: 24px 24px 0 0; 
+            margin-top: auto;
+            box-shadow: 0 -5px 20px rgba(0,0,0,0.03); 
+        }
+        .footer a { 
+            color: var(--text-main); 
+            font-weight: 600; 
+            position: relative;
+            z-index: 1;
+        }
+        .footer a:hover { text-decoration: underline; }
+
+        .signin-wrapper { 
+            display: flex; 
+            gap: 30px;     /* 兩欄中間的間距 */
+            width: 100%; 
+            justify-content: center; /* 簽到表置中 */
+        }
+        .signin-col { flex: 1; }
+        .signin-table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            font-size: 11px; 
+        }
+        .signin-table th, .signin-table td { border: 1px solid #333; padding: 5px 4px; text-align: center; }
+        .signin-table td { height: 26px; }
+        .signin-table th { background-color: #f0f0f0; font-weight: bold; }
+        .col-sign { height: 35px; }
+
+        .notice {
+            font-size: 12px;
+            color: #6b7280;
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+            margin-top: 6px;
+        }
+        .notice::before {
+            content: "ⓘ";
+            font-size: 13px;
+            color: #4b5563;
+        }
+
+        /* 手機版設定 */
+        @media (max-width: 768px) {
+            .split-layout { grid-template-columns: 1fr; }
+            
+            /* Footer 與 Main Card 調整 */
+            .footer { width: 100%; border-radius: 0; margin-bottom: 0; }
+            .main-card { padding: 20px 10px; }
+            .card {padding: 15px; }
+            body { padding: 0; }
+            .pref-layout {
+                grid-template-columns: 1fr; /* 手機版：改為單欄，垂直堆疊 */
+                gap: 20px;
+            }
+            .anim-wrapper {
+                margin: 0 auto; 
+                width: 100%;
+                display: flex;
+                justify-content: center;
+            }
+
+            /* 針對底部導航區的按鈕設定滿版，而不是全域按鈕 */
+            .action-bar {
+                flex-direction: column-reverse; /* 按鈕垂直排列，下一步在最上面 */
+                gap: 15px;
+            }
+            .action-bar .btn {
+                width: 80%; /* 只有這裡的按鈕會變 100% 寬 */
+                justify-content: center;
+            }
+
+            /* Toolbar 手機版優化：垂直堆疊 */
+            .toolbar {
+                flex-direction: column; /* 垂直排列 */
+                align-items: stretch;   /* 寬度拉滿 */
+                gap: 12px;              /* 項目間距 */
+            }
+            
+            /* 讓分隔線在手機版隱藏 */
+            .tool-separator { display: none; }
+
+            /* 讓每個工具群組在手機上左右對齊 (左邊標籤、右邊控制項) */
+            .tool-group {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                width: 100%;
+                border-bottom: 1px dashed #e9ecef; /* 加個分隔線比較好看 */
+                padding-bottom: 8px;
+            }
+            .tool-group:last-child { border-bottom: none; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <div class="main-card">
+        <h1>考場座位隨機分配系統</h1>
+
+        <!-- 步驟條 -->
+        <div class="stepper">
+            <div class="step" :class="{active: step===1, completed: step>1}" @click="step > 1 ? step=1 : null">
+                <div class="step-circle">{{ step > 1 ? '✓' : '1' }}</div>
+                <div class="step-label">資料準備</div>
+            </div>
+            <div class="step" :class="{active: step===2, completed: step>2}" @click="step > 2 ? step=2 : null">
+                <div class="step-circle">{{ step > 2 ? '✓' : '2' }}</div>
+                <div class="step-label">場地佈局</div>
+            </div>
+            <div class="step" :class="{active: step===3, completed: step>3}" @click="step > 3 ? step=3 : null">
+                <div class="step-circle">{{ step > 3 ? '✓' : '3' }}</div>
+                <div class="step-label">分配規則</div>
+            </div>
+            <div class="step" :class="{active: step===4}" @click="step > 4 ? step=4 : null">
+                <div class="step-circle">4</div>
+                <div class="step-label">預覽與匯出</div>
+            </div>
+        </div>
+
+        <transition name="fade" mode="out-in">
+            <!-- Step 1: 資料準備 -->
+            <div v-if="step === 1" key="step1" class="split-layout">
+                <!-- 左：考試資訊 -->
+                <div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">考試資訊設定</span></div>
+                        <div class="form-group">
+                            <label class="form-label">學期 (Semester)</label>
+                            <input type="text" class="form-control" v-model="examInfo.semester" placeholder="例如：114-1">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">考試名稱 (Exam Name)</label>
+                            <input type="text" class="form-control" v-model="examInfo.title" placeholder="例如：程式設計期中考">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">考試日期 (Exam Date)</label>
+                            <input type="date" class="form-control" v-model="examInfo.date">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">考試時間 (Exam Time)</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="time" class="form-control" v-model="examInfo.startTime" style="flex: 1;">
+                                <span style="font-weight:bold; color:var(--secondary);">至</span>
+                                <input type="time" class="form-control" v-model="examInfo.endTime" style="flex: 1;">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">備註 (Remarks)</label>
+                            <textarea class="form-control" v-model="examInfo.note" placeholder="（這部分目前沒有功能，不用填）"></textarea>
+                        </div>
+                        <div class="notice" style="margin: 0px 0px 0px 0px;">
+                            此處設定的資訊將會顯示在最終匯出的檔案中。
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右：名單上傳 -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">考生名單管理</span>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: stretch;">
+                        
+                        <div style="display: flex; flex-direction: column;">
+                            <label class="form-label">方法一：整批匯入名單 <span class="badge badge-primary" style="margin-left: 3px;">CSV / XLSX</span></label>
+                            
+                            <div class="upload-zone" 
+                                 :class="{'drag-active': isDragActive}"
+                                 @click="$refs.fileInput.click()"
+                                 @dragover.prevent="isDragActive=true"
+                                 @dragleave.prevent="isDragActive=false"
+                                 @drop.prevent="handleDrop"
+                                 style="padding: 20px; margin-bottom: 0; flex: 1; display: flex; flex-direction: column; justify-content: center;">
+                                <input type="file" ref="fileInput" @change="handleFileSelect" accept=".csv, .xlsx, .xls" style="display:none" multiple>
+                                <p style="font-size: 3rem; margin: 0 0 10px 0;">📂</p>
+                                <div style="display:flex; align-items:center; justify-content:center; gap:10px;">
+                                    <!-- <span style="font-size: 2rem;">📂</span> -->
+                                    <div style="text-align:left;">
+                                        <span style="font-weight:600; display:block;">點擊 或 拖曳檔案至此</span>
+                                        <span style="font-size:12px; color:#666;">支援 CSV 或 Excel (.xlsx)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; flex-direction: column;">
+                            <label class="form-label">方法二：手動新增考生</label>
+                            
+                            <div style="background: rgb(250, 251, 252); padding: 20px; border-radius: 12px; border: 2px dashed rgb(222, 226, 230); flex: 1 1 0%; display: flex; flex-direction: column; justify-content: center;">
+                                <div style="display: flex; flex-direction: column; gap: 10px;">
+                                    <input type="text" class="form-control" v-model="manualInput.sID" placeholder="學號 (ID)">
+                                    <input type="text" class="form-control" v-model="manualInput.Name" placeholder="姓名 (Name)">
+                                    <button class="quiet-btn btn-primary" @click="addManualStudent" style="width: 100%;">新增</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="hint-box">
+                        <span>ⓘ</span>
+                        <div>
+                            <strong>「整批匯入名單」格式要求：</strong><br>
+                            1. 第一欄為<strong>學號</strong>、第二欄為<strong>姓名</strong>。<br>
+                            2. 系統會以「學號」、「ID」等字樣判斷，自動忽略標題列。
+                        </div>
+                    </div>
+                    <div class="hint-box">
+                        <span>ⓘ</span>
+                        <div>
+                            <strong>「手動新增考生」提示：</strong><br>
+                            適用於補登少量考生，輸入後點擊「新增」即可加入名單。
+                        </div>
+                    </div>
+
+                    <div v-if="students.length">
+                        <div style="margin-top: 25px; padding-top: 20px; border-top: 1px dashed #e9ecef;"></div>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 15px; margin-bottom: 15px;">
+                            <div style="display:flex; align-items:center; gap: 10px;">
+                                <span style="font-weight:bold; font-size:18px;">名單預覽</span>
+                                <span class="badge badge-success">共 {{ students.length }} 人</span>
+                                <span v-if="duplicateCount > 0" class="badge badge-warning">⚠️ {{ duplicateCount }} 重複</span>
+                            </div>
+
+                            <div style="display:flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                                <div class="btn-pill-group">
+                                    <button class="btn-pill" :class="{active: sortType==='import'}" @click="sortStudents('import')">匯入順序</button>
+                                    <button class="btn-pill" :class="{active: sortType==='asc'}" @click="sortStudents('asc')">學號 A-Z 排序</button>
+                                    <button class="btn-pill" :class="{active: sortType==='desc'}" @click="sortStudents('desc')">學號 Z-A 排序</button>
+                                    <button class="btn-pill" :class="{active: sortType==='manual'}" @click="sortType='manual'">手動排序</button>
+                                </div>
+
+                                <div style="display: flex; gap: 8px;">
+                                    <button class="btn-action-danger" @click="removeDuplicates" v-if="duplicateCount > 0">× 移除重複</button>
+                                    <button class="btn-action-danger" @click="clearStudents">× 清空名單</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="student-table-container">
+                            <table class="student-table">
+                                <thead>
+                                    <tr>
+                                        <th width="15%">#</th>
+                                        <th width="30%">學號</th>
+                                        <th width="30%">姓名</th>
+                                        <th width="25%">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(s, i) in students" :key="s._oid">
+                                        <td>
+                                            {{ i + 1 }}
+                                            <span v-if="s.isDuplicate" title="學號重複" style="font-size:12px; cursor:help; margin-left: 2px;">⚠️</span>
+                                        </td>
+                                        <td><input type="text" class="table-input" v-model="s.sID" @change="onStudentUpdate"></td>
+                                        <td><input type="text" class="table-input" v-model="s.Name" @change="onStudentUpdate"></td>
+                                        <td>
+                                            <div style="display:flex; gap:5px; justify-content: flex-start;">
+                                                <button class="btn-del-student" @click="removeStudent(i)" title="刪除考生">×</button>
+                                                <template v-if="sortType === 'manual'">
+                                                    <button class="btn-sort" @click="moveStudent(i, -1)" :disabled="i===0" title="提升考生順序">▲</button>
+                                                    <button class="btn-sort" @click="moveStudent(i, 1)" :disabled="i===students.length-1" title="調降考生順序">▼</button>
+                                                </template>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="notice" style="margin: 20px 0px 0px 0px;">
+                            此處會儲存您設定的名單順序。
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 2: 場地佈局 -->
+            <div v-if="step === 2" key="step2" class="split-layout">
+                <!-- 左：選擇考場 -->
+                <div class="card" style="height: fit-content;">
+                    <div class="card-header"><span class="card-title">考場啟用</span></div>
+                    <div style="font-size:13px; color:var(--text-sub); margin-bottom:15px;">
+                        勾選本次考試要使用的考場，並可在右側編輯詳細佈局。
+                    </div>
+                    
+                    <div v-for="(room, key) in rooms" :key="key" 
+                        style="display:flex; align-items:center; padding:10px; border-radius:8px; margin-bottom:8px; cursor:pointer;"
+                        @click="room.selected = !room.selected"> 
+                        
+                        <input type="checkbox" v-model="room.selected" @click.stop style="transform:scale(1.2); margin-right:10px;">
+                        
+                        <div style="flex:1; min-width: 0;">
+                            
+                            <div style="font-weight:600; font-size:14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                                 :title="room.name">
+                                {{ room.name }}
+                            </div>
+                            
+                            <div style="font-size:12px; color:var(--text-sub);">
+                                可用座位：{{ getRoomAvailable(key) }} 個
+                            </div>
+                        </div>
+                        
+                        <div v-if="currentRoomKey===key" style="font-size:12px; color:var(--primary); font-weight:bold; white-space: nowrap; margin-left: 8px;">
+                            編輯中
+                        </div>
+                    </div>
+
+                    <div style="margin-top:15px; padding-top:15px; border-top:1px solid #e9ecef;">
+                        <div class="stats-chip-container">
+                            <div class="stats-chip">
+                                <span class="dot blue"></span> 
+                                總可用座位：{{ totalAvailable }} 個
+                            </div>
+                            <div class="stats-chip">
+                                <span class="dot green"></span> 
+                                總考生數：{{ students.length }} 人
+                            </div>
+                            <div v-if="totalAvailable < students.length" class="stats-chip" style="background:var(--danger-light); color:var(--danger); border-color:var(--danger-light);">
+                                <span class="dot red"></span> 
+                                尚缺 {{ students.length - totalAvailable }} 個座位
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右：考場佈局設計 (PowerPoint Style) -->
+                <div style="width:100%; min-width: 0;"> <!-- min-width: 0 is important for flex/grid child overflow -->
+                    <!-- 上方縮圖列 -->
+                    <div class="room-slides-container">
+                        <div v-for="(room, key) in rooms" :key="key" 
+                            class="room-slide" :class="{active: currentRoomKey === key}"
+                            @click="currentRoomKey = key">
+                            <div class="room-slide-info">
+                                <h4>{{ room.name }}</h4>
+                                <div class="room-slide-stats">{{ room.rowSpecs.filter(x=>x).length }} 行 × {{ room.colSpecs.filter(x=>x).length }} 列</div>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span class="badge" :class="room.selected ? 'badge-success' : ''">{{ room.selected ? '啟用' : '未啟用' }}</span>
+                                <small style="color:#aaa;">#{{ room.order }}</small>
+                            </div>
+                        </div>
+                        <div class="room-slide-add" @click="addCustomRoom" title="新增自訂考場">
+                            <span style="font-size: 24px; line-height: 1; font-weight: 300;">+</span>
+                            <span style="font-size: 13px; font-weight: bold;">新增自訂考場</span>
+                        </div>
+                    </div>
+
+                    <!-- 主編輯區 -->
+                    <div class="card" v-if="currentRoomKey">
+                        <div class="card-header"><span class="card-title">考場細節佈局</span></div>
+                        <div class="card-header-without-border">
+                            <div style="display:flex; flex-wrap: wrap; align-items:center; gap:10px; width:100%;">
+
+                                <span class="tool-label" style="font-size: 14px;">考場名稱</span>
+
+                                <input type="text" v-model="rooms[currentRoomKey].name" 
+                                    class="form-control" style="font-weight:bold; font-size:16px; width:auto; flex:1; min-width: 150px;">
+
+                                <button class="btn btn-outline-danger" 
+                                        @click="removeRoom(currentRoomKey)" 
+                                        title="刪除此考場"
+                                        style="padding: 10px 16px; border-radius: 8px; white-space: nowrap; font-weight: bold;">
+                                    × 刪除考場
+                                </button>
+
+                            </div>
+                        </div>
+
+                        <!-- 工具列 -->
+                        <div class="toolbar">
+
+                            <div class="tool-group">
+                                <span class="tool-label">直行編號方向</span>
+                                <button class="btn btn-sm btn-primary" @click="toggleNumberingType(currentRoomKey)" title="切換直行索引值編號方向">
+                                    {{ rooms[currentRoomKey].numberingType==='normal' ? '1⭢N' : 'N⭠1' }}
+                                </button>
+                            </div>
+                            
+                            <div class="tool-separator"></div>
+
+                            <div class="tool-group">
+                                <span class="tool-label">直行 (Cols)</span>
+                                <div style="display:flex; align-items:center; background:white; border:1px solid #dee2e6; border-radius:6px; padding:2px;">
+                                    <button class="btn btn-sm"  title="刪除直行"
+                                            style="border:none; background:transparent; padding: 2px 8px;" 
+                                            @click="modifyLayout(currentRoomKey, 'delCol')">➖</button>
+                                    
+                                    <span class="tool-counter">{{ rooms[currentRoomKey].colSpecs.length }}</span>
+                                    
+                                    <button class="btn btn-sm"  title="新增直行"
+                                            style="border:none; background:transparent; padding: 2px 8px;" 
+                                            @click="modifyLayout(currentRoomKey, 'addCol')">➕</button>
+                                </div>
+                            </div>
+
+                            <div class="tool-separator"></div>
+
+                            <div class="tool-group">
+                                <span class="tool-label">橫列 (Rows)</span>
+                                <div style="display:flex; align-items:center; background:white; border:1px solid #dee2e6; border-radius:6px; padding:2px;">
+                                    <button class="btn btn-sm" title="刪除橫列"
+                                            style="border:none; background:transparent; padding: 2px 8px;" 
+                                            @click="modifyLayout(currentRoomKey, 'delRow')">➖</button>
+                                    
+                                    <span class="tool-counter">{{ rooms[currentRoomKey].rowSpecs.length }}</span>
+                                    
+                                    <button class="btn btn-sm" title="新增橫列"
+                                            style="border:none; background:transparent; padding: 2px 8px;" 
+                                            @click="modifyLayout(currentRoomKey, 'addRow')">➕</button>
+                                </div>
+                            </div>
+
+                            <div class="tool-separator"></div>
+                            
+                            <div class="tool-group">
+                                <span class="tool-label">入口位置</span>
+                                <div style="display:flex; gap:5px;">
+                                    <button class="btn btn-sm btn-outline" @click="toggleEntrance(currentRoomKey)" title="切換入口位置（左右）">
+                                        ↔️ {{ rooms[currentRoomKey].entrance==='right' ? '右側' : '左側' }}
+                                    </button>
+                                    <button class="btn btn-sm btn-outline" @click="toggleEntrancePos(currentRoomKey)" title="切換入口位置（前後）">
+                                        ↕️ {{ rooms[currentRoomKey].entrancePos==='front' ? '前方' : '後方' }}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 網格編輯器 -->
+                        <div class="grid-editor-wrapper">
+                            <transition name="room-switch" mode="out-in">
+                                <div :key="currentRoomKey" style="display: inline-block; min-width: 100%;">
+                                    <!-- 入口標示 (前) -->
+                                    <div v-if="rooms[currentRoomKey].entrancePos === 'front'" 
+                                        style="text-align:right; color:var(--danger); font-size:12px; margin:15px; font-weight:bold;"
+                                        :style="{textAlign: rooms[currentRoomKey].entrance === 'left' ? 'left' : 'right'}">
+                                        {{ rooms[currentRoomKey].entrance === 'left' ? '⬅ 入口位置（前）' : '入口位置（前） ⮕' }}
+                                    </div>
+
+                                    <div class="grid-layout" :style="getGridStyle(currentRoomKey)">
+                                        <div></div>
+                                        <!-- 行標題 (點擊切換走道) -->
+                                        <div v-for="(h, idx) in rooms[currentRoomKey].headers" :key="'h-'+idx"
+                                            class="col-header" 
+                                            :class="[
+                                                { 'aisle-label': h==='走道' },
+                                                getAnimClass(currentRoomKey, 'col', idx)
+                                            ]"
+                                            @click="toggleColType(currentRoomKey, idx)"
+                                            title="點擊切換：座位 / 走道">
+                                            <span :id="'col-h-'+currentRoomKey+'-'+idx" style="display: block;">
+                                                {{ h }}
+                                            </span>
+                                        </div>
+                                        <div></div>
+
+                                        <template v-for="(rLabel, rIdx) in rooms[currentRoomKey].rowHeaders" :key="'r-'+rIdx">
+                                            <!-- 列標題 (左) -->
+                                            <div class="row-header" 
+                                                :class="getAnimClass(currentRoomKey, 'row', rIdx)"
+                                                @click="toggleRowType(currentRoomKey, rIdx)" 
+                                                title="點擊切換：座位 / 走道">
+                                                {{ rLabel }}
+                                            </div>
+                                            
+                                            <!-- 座位 -->
+                                            <div v-for="(colSpec, cIdx) in rooms[currentRoomKey].colSpecs" :key="'s-'+rIdx+'-'+cIdx"
+                                                class="seat" title="點擊切換：禁用狀態"
+                                                :class="[
+                                                    {'aisle': colSpec===0 || rooms[currentRoomKey].rowSpecs[rIdx]===0},
+                                                    {'blocked': getSeat(currentRoomKey, rIdx, cIdx).type === 2},
+                                                    getAnimClass(currentRoomKey, 'row', rIdx),
+                                                    getAnimClass(currentRoomKey, 'col', cIdx)
+                                                ]"
+                                                @click="(colSpec===1 && rooms[currentRoomKey].rowSpecs[rIdx]===1) ? toggleSeat(currentRoomKey, rIdx, cIdx) : null">
+                                                <span v-if="getSeat(currentRoomKey, rIdx, cIdx).type===2">✕</span>
+                                                <span v-else-if="colSpec===1 && rooms[currentRoomKey].rowSpecs[rIdx]===1" class="seat-coord">
+                                                    {{ getSeat(currentRoomKey, rIdx, cIdx).coordStr }}
+                                                </span>
+                                            </div>
+
+                                            <!-- 列標題 (右) -->
+                                            <div class="row-header" 
+                                                :class="getAnimClass(currentRoomKey, 'row', rIdx)"
+                                                @click="toggleRowType(currentRoomKey, rIdx)">
+                                                {{ rLabel }}
+                                            </div>
+                                        </template>
+                                    </div>
+
+                                    <!-- 入口標示 (後) -->
+                                    <div v-if="rooms[currentRoomKey].entrancePos === 'back'" 
+                                        style="text-align:right; color:var(--danger); font-size:12px; margin:15px; font-weight:bold;"
+                                        :style="{textAlign: rooms[currentRoomKey].entrance === 'left' ? 'left' : 'right'}">
+                                        {{ rooms[currentRoomKey].entrance === 'left' ? '⬅ 入口位置（後）' : '入口位置（後） ⮕' }}
+                                    </div>
+                                </div>
+                            </transition>
+                        </div>
+
+                        <!-- 操作提示 -->
+                        <div class="hint-box">
+                            <span>ⓘ</span>
+                            <div>
+                                <strong>「考場細節佈局」操作提示：</strong><br>
+                                1. 細節佈局操作中的「直行 (Cols)」與「橫列 (Rows)」數字包含走道。<br>
+                                2. 新增或刪減行列時，會從索引值較大的一端完成操作。可以調整「直行編號方向」來改變索引值起始位置。<br>
+                                3. 點擊上方「行索引值」或兩側「列索引值」可將該行/列設置為走道。<br>
+                                4. 點擊各別座位可將其設置為禁用狀態（Ｘ）。禁用狀態下，該座位不會被分配到考生。
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 3: 分配規則 -->
+            <div v-if="step === 3" key="step3" class="split-layout">
+                <!-- 左：教室預覽與配額 -->
+                <div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">考場順序與配額管理</span></div>
+                        
+                        <div v-if="assignConfig.distribute === 'auto'">
+                            <div class="form-group">
+                                <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:10px; color:var(--text-sub);">
+                                    <span style="margin-left: 12px;">考場順序 / 名稱</span>
+                                    <span style="margin-right: 10px;">預計分配</span>
+                                </div>
+                                <div v-for="(key, idx) in sortedRoomKeys" :key="'quota-'+key" 
+                                    style="background:#f8f9fa; padding:10px; border-radius:8px; margin-bottom:8px; border:1px solid #e9ecef;">
+                                    <div style="display:flex; align-items:center; gap:8px;">
+                                        <div style="display:flex; flex-direction:column; gap:2px;">
+                                            <button class="btn-sort" @click="moveOrder(key, -1)" :disabled="idx===0" title="提升考場順序">▲</button>
+                                            <button class="btn-sort" @click="moveOrder(key, 1)" :disabled="idx===sortedRoomKeys.length-1" title="調降考場順序">▼</button>
+                                        </div>
+                                        
+                                        <div style="flex:1; min-width: 0;"> <div style="display:flex; justify-content:space-between; align-items:center;">
+                                                <div style="min-width: 0;"> <div style="font-weight:bold; font-size:14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                                                         :title="rooms[key].name">
+                                                        {{ rooms[key].name }}
+                                                    </div>
+                                                    <div style="font-size:11px; color:#999;">容量：{{ getRoomAvailable(key) }}</div>
+                                                </div>
+                                                <div style="font-size:12px; text-align:right; white-space:nowrap; margin-left: 10px;">
+                                                    {{ getAutoCount(key) }} 人
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div v-else class="status-msg success">
+                                ✅ 系統將依考場順序自動填滿座位
+                            </div>
+                        </div>
+
+                        <div v-else>
+                            <div class="form-group">
+                                <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:10px; color:var(--text-sub);">
+                                    <span style="margin-left: 12px;">考場順序 / 名稱</span>
+                                    <span style="margin-right: 10px;">自行分配</span>
+                                </div>
+                                <div v-for="(key, idx) in sortedRoomKeys" :key="'quota-'+key" 
+                                    style="background:#f8f9fa; padding:10px; border-radius:8px; margin-bottom:8px; border:1px solid #e9ecef;">
+                                    <div style="display:flex; align-items:center; gap:8px; margin-bottom:5px;">
+                                        <!-- 排序按鈕 -->
+                                        <div style="display:flex; flex-direction:column; gap:2px;">
+                                            <button class="btn-sort" @click="moveOrder(key, -1)" :disabled="idx===0" title="提升考場順序">▲</button>
+                                            <button class="btn-sort" @click="moveOrder(key, 1)" :disabled="idx===sortedRoomKeys.length-1" title="調降考場順序">▼</button>
+                                        </div>
+                                        <div style="flex:1; min-width: 0;"> <div style="font-weight:bold; font-size:14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                                                 :title="rooms[key].name">
+                                                {{ rooms[key].name }}
+                                            </div>
+                                            <div style="font-size:11px; color:#999;">可用座位：{{ getRoomAvailable(key) }} 個</div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div v-if="key !== lastActiveRoomKey" style="display:flex; align-items:center; justify-content: flex-end; gap:8px;">
+                                        <label style="font-size:12px;">指定人數：</label>
+                                        <input type="number" v-model.number="roomQuotas[key]" min="0" :max="getRoomAvailable(key)"
+                                            @input="checkQuota(key)"
+                                            class="form-control" style="width:80px; padding:4px 8px; height:auto; text-align: right;">
+                                            <label style="font-size:12px;">人</label>
+                                    </div>
+                                    <div v-else style="font-size:12px; text-align:right;">
+                                        自動計算剩餘人數：{{ autoAllocatedCount }} 人
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div v-if="isOverloaded" class="status-msg error">
+                                ⚠️ 人數超出總容量！請增加考場或調整人數
+                            </div>
+                            <div v-else class="status-msg success">
+                                ✅ 配額設定正常
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右：規則設定 -->
+                <div class="card">
+                    <div class="card-header"><span class="card-title">分配邏輯設定</span></div>
+
+                    <div class="form-group">
+                        <label class="form-label">1. 分流策略（如何分配各考場人數？）</label>
+                        <div class="btn-pill-group">
+                            <button class="btn-pill" :class="{active: assignConfig.distribute==='auto'}" @click="assignConfig.distribute='auto'">
+                                🌊 自動填滿 (Auto-Fill)
+                            </button>
+                            <button class="btn-pill" 
+                                    :class="{active: assignConfig.distribute==='sequential'}" 
+                                    @click="sortedRoomKeys.length > 1 ? assignConfig.distribute='sequential' : null"
+                                    :disabled="sortedRoomKeys.length <= 1"
+                                    :title="sortedRoomKeys.length <= 1 ? '單一考場無需分段' : ''">
+                                🖐️ 手動指定 (Manual)
+                            </button>
+                        </div>
+                        
+                        <div class="option-desc" v-if="assignConfig.distribute==='auto'">
+                            自動填滿：系統將依照「資料準備」階段設定的名單順序，優先填滿第一間考場，剩餘人數再填入下一間。
+                        </div>
+                        <div class="option-desc" v-else>
+                            手動指定：自行決定每間考場要分配多少考（例如：第一間 50 人，第二間 30 人）。
+                        </div>
+                    </div>
+
+                    <hr style="border:0; border-top:1px dashed #e9ecef; margin:20px 0;">
+
+                    <div class="form-group">
+                        <label class="form-label">2. 入座策略（進入考場後怎麼分配座位？）</label>
+                        <div class="btn-pill-group">
+                            <button class="btn-pill" :class="{active: assignConfig.seat==='random'}" @click="assignConfig.seat='random'">
+                                🎲 隨機入座 (Random)
+                            </button>
+                            <button class="btn-pill" :class="{active: assignConfig.seat==='sequential'}" @click="assignConfig.seat='sequential'">
+                                🆔 依序入座 (Sequential)
+                            </button>
+                        </div>
+                        <div class="option-desc" v-if="assignConfig.seat==='random'">
+                            隨機入座：考生在該考場內的座位位置是隨機的。
+                        </div>
+                        <div class="option-desc" v-else>
+                            依序入座：依照「資料準備」階段設定的名單順序填滿座位。
+                        </div>
+                    </div>
+
+                    <hr style="border:0; border-top:1px dashed #e9ecef; margin:20px 0;">
+
+                    <div class="form-group">
+                        <label class="form-label">3. 填空順序偏好</label>
+                        <!-- 拆分為左右佈局：左邊動畫，右邊選項 -->
+                        <div class="pref-layout">
+                            <!-- 動畫區 -->
+                            <div class="anim-wrapper">
+                                <div class="anim-container">
+                                    <!-- 共 25 格 -->
+                                    <div v-for="n in 25" :key="n" 
+                                        class="anim-cell" 
+                                        :class="{active: getAnimOrder(n-1) < animStep}">
+                                        {{ getAnimOrder(n-1) + 1 }}
+                                    </div>
+                                </div>
+                                <div style="font-size:12px; margin-top:10px; color:#666;">填空順序演示</div>
+                            </div>
+
+                            <div style="display:flex; flex-direction: column; gap: 15px;">
+                                <div>
+                                    <label style="font-size:12px; display:block; margin-bottom:6px; font-weight:bold;">A. 優先填滿方向</label>
+                                    <div class="btn-pill-group">
+                                        <button class="btn-pill" :class="{active: fillPrefs.priority==='row'}" @click="fillPrefs.priority='row'">先填滿橫列 (Row-first priority)</button>
+                                        <button class="btn-pill" :class="{active: fillPrefs.priority==='col'}" @click="fillPrefs.priority='col'">先填滿直行 (Column-first priority)</button>
+                                    </div>
+                                    <div class="option-desc">
+                                        {{ fillPrefs.priority==='row' ? '先填滿橫列：坐滿第一橫排後，才坐第二橫排。' : '先填滿直行：坐滿第一直行後，才坐第二直行。' }}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label style="font-size:12px; display:block; margin-bottom:6px; font-weight:bold;">B. 前後順序</label>
+                                    <div class="btn-pill-group">
+                                        <button class="btn-pill" :class="{active: fillPrefs.rowDir==='forward'}" @click="fillPrefs.rowDir='forward'">由前至後 (Front-to-back)</button>
+                                        <button class="btn-pill" :class="{active: fillPrefs.rowDir==='backward'}" @click="fillPrefs.rowDir='backward'">由後至前 (Back-to-front)</button>
+                                    </div>
+                                    <div class="option-desc">
+                                        {{ fillPrefs.rowDir==='forward' ? '由前至後：視覺上從前面填到後面。' : '由後至前：視覺上從後面填到前面。' }}
+                                    </div>
+                                </div>
+                                <div>
+                                    <label style="font-size:12px; display:block; margin-bottom:6px; font-weight:bold;">C. 左右順序</label>
+                                    <div class="btn-pill-group">
+                                        <button class="btn-pill" :class="{active: fillPrefs.colDir==='left_right'}" @click="fillPrefs.colDir='left_right'">由左至右 (Left-to-right)</button>
+                                        <button class="btn-pill" :class="{active: fillPrefs.colDir==='right_left'}" @click="fillPrefs.colDir='right_left'">由右至左 (Right-to-left)</button>
+                                    </div>
+                                    <div class="option-desc">
+                                        {{ fillPrefs.colDir==='left_right' ? '由左至右：視覺上從左邊填到右邊。' : '由右至左：視覺上從右邊填到左邊。' }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Step 4: 預覽與匯出 -->
+            <div v-if="step === 4 && !isReloading" key="step4" class="split-layout">
+                <!-- 左：結果資訊 -->
+                <div>
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">分配邏輯</span></div>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 15px;">
+                            <div>
+                                <label class="form-label">分流策略 與 入座策略：</label>
+                                <div style="display:flex; gap:8px;">
+                                    <span style="background:#f8f9fa; padding:5px 10px; border-radius:6px; border:1px solid #dee2e6; color:#555; font-size:13px; display:flex; align-items:center; gap:4px;">
+                                        {{ assignConfig.distribute==='auto' ? '🌊 自動填滿' : '🖐️ 手動指定' }}
+                                    </span>
+                                    <span style="background:#f8f9fa; padding:5px 10px; border-radius:6px; border:1px solid #dee2e6; color:#555; font-size:13px; display:flex; align-items:center; gap:4px;">
+                                        {{ assignConfig.seat==='random' ? '🎲 隨機入座' : '🆔 依序入座' }}
+                                    </span>
+                                </div>
+                            </div>
+                            
+                            <div>
+                                <label class="form-label">填空順序偏好：</label>
+                                <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:13px;">
+                                    <span style="background:#f8f9fa; padding:5px 10px; border-radius:6px; border:1px solid #dee2e6; color:#555;">
+                                        {{ fillPrefs.priority==='row' ? '先填滿橫列' : '先填滿直行' }}
+                                    </span>
+                                    <span style="background:#f8f9fa; padding:5px 10px; border-radius:6px; border:1px solid #dee2e6; color:#555;">
+                                        {{ fillPrefs.rowDir==='forward' ? '由前至後' : '由後至前' }}
+                                    </span>
+                                    <span style="background:#f8f9fa; padding:5px 10px; border-radius:6px; border:1px solid #dee2e6; color:#555;">
+                                        {{ fillPrefs.colDir==='left_right' ? '由左至右' : '由右至左' }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">分配結果統計</span></div>
+                        <div class="form-group">
+                            <div class="stats-chip-container">
+                                <div class="stats-chip"><span class="dot blue"></span> 實際分配座位：{{ totalAssigned }} 個</div>
+                                <div class="stats-chip"><span class="dot green"></span> 總考生數：{{ students.length }} 人</div>
+                                <div class="stats-chip"><span class="dot black"></span> 使用考場：{{ sortedRoomKeys.length }} 間</div>
+                            </div>
+                        </div>
+                        
+                        <div style="margin-top:15px; font-size:13px;">
+                            <div v-for="key in sortedRoomKeys" :key="'res-'+key" 
+                                 style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; padding-bottom:4px; border-bottom:1px dashed #eee;">
+                                
+                                <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 10px;"
+                                      :title="rooms[key].name">
+                                    {{ rooms[key].name }}
+                                </span>
+                                
+                                <strong style="white-space: nowrap; flex-shrink: 0;">
+                                    {{ countAssigned(key) }} 人
+                                </strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header"><span class="card-title">匯出結果 (HTML)</span></div>
+                        <div style="font-size: 13px; color: var(--text-sub); margin-bottom: 20px;"> 匯出為 HTML 網頁檔，可用瀏覽器開啟列印。 </div>
+                        <button class="quiet-btn btn-outline" style="width:100%; margin-bottom:20px;" @click="downloadHTML('seat')">
+                            💾 另存 座位表 (.html)
+                        </button>
+                        <div style="background:#f8f9fa; padding:12px; border-radius:8px; border:1px solid #e9ecef; margin-bottom:10px;">
+                            <label class="form-label" style="margin-bottom:8px;">簽到表版面設定：</label>
+                            <div style="display:flex; gap:15px;">
+                                <div style="flex:1;">
+                                    <label style="font-size:12px; color:#666;">每頁欄數 (Cols)</label>
+                                    <input type="number" class="form-control" v-model.number="exportConfig.colsPerPage" min="1" max="4" style="padding:4px 8px;">
+                                </div>
+                                <div style="flex:1;">
+                                    <label style="font-size:12px; color:#666;">每欄列數 (Rows)</label>
+                                    <input type="number" class="form-control" v-model.number="exportConfig.rowsPerPage" min="10" max="100" style="padding:4px 8px;">
+                                </div>
+                            </div>
+                            <div style="font-size:11px; color:#999; margin-top:5px;">
+                                預設：每頁 2 欄，每欄 25 列（共 50 人/頁）。
+                            </div>
+                        </div>
+                        <button class="quiet-btn btn-outline" style="width:100%; margin-bottom:10px;" @click="downloadHTML('signin_global')">
+                            💾 另存 總簽到表 (.html)
+                        </button>
+                        <button class="quiet-btn btn-outline" style="width:100%;" @click="downloadHTML('signin_room')">
+                            💾 另存 考場簽到表 (.html)
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 右：預覽區 -->
+                <div style="width:100%; min-width: 0;">
+                    <!-- 教室切換 Tab -->
+                    <div class="room-slides-container">
+                        <div v-for="key in sortedRoomKeys" :key="'tab-'+key" 
+                            class="room-slide" :class="{active: previewRoomKey === key}"
+                            style="flex: 0 0 140px; height: 90px;"
+                            @click="previewRoomKey = key">
+                            <div class="room-slide-info">
+                                <h4 style="font-size:14px;">{{ rooms[key].name }}</h4>
+                                <div class="room-slide-stats">
+                                    {{ rooms[key].rowSpecs.filter(x=>x).length }} 行 × {{ rooms[key].colSpecs.filter(x=>x).length }} 列
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card" v-if="previewRoomKey">
+                        <div class="card-header" style="justify-content: flex-start; gap: 12px;">
+                            
+                            <span class="card-title" style="margin:0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;">
+                                考場座位預覽：{{ rooms[previewRoomKey].name }}
+                            </span>
+                            
+                            <span class="badge badge-info" style="font-size: 12px; align-self: center; flex-shrink: 0;">
+                                已分配 {{ countAssigned(previewRoomKey) }} 人
+                            </span>
+                        </div>
+                        
+                        <div class="grid-editor-wrapper" style="border:none; padding:0px 0px 10px 0px; min-height:auto;">
+                            <transition name="room-switch" mode="out-in">
+                                <div :key="previewRoomKey" style="display: inline-block; min-width: 100%;">
+                                    <!-- 入口標示 (前) -->
+                                    <div v-if="rooms[previewRoomKey].entrancePos === 'front'" 
+                                        style="text-align:right; color:var(--danger); font-size:12px; margin:15px; font-weight:bold;"
+                                        :style="{textAlign: rooms[previewRoomKey].entrance === 'left' ? 'left' : 'right'}">
+                                        {{ rooms[previewRoomKey].entrance === 'left' ? '⬅ 入口位置（前）' : '入口位置（前） ⮕' }}
+                                    </div>
+                                    
+                                    <div class="grid-layout" :style="getGridStyle(previewRoomKey)">
+                                        <div></div>
+                                        <div v-for="h in rooms[previewRoomKey].headers" class="col-header" :class="{'aisle-label': h==='走道'}">{{ h }}</div>
+                                        <div></div>
+
+                                        <template v-for="(rLabel, rIdx) in rooms[previewRoomKey].rowHeaders">
+                                            <div class="row-header">{{ rLabel }}</div>
+                                            <div v-for="(colSpec, cIdx) in rooms[previewRoomKey].colSpecs"
+                                                class="seat"
+                                                :class="{
+                                                    'aisle': colSpec===0 || rooms[previewRoomKey].rowSpecs[rIdx]===0,
+                                                    'blocked': getSeat(previewRoomKey, rIdx, cIdx).type===2,
+                                                    'student': getSeat(previewRoomKey, rIdx, cIdx).student
+                                                }">
+                                                <span v-if="getSeat(previewRoomKey, rIdx, cIdx).type===2">✕</span>
+                                                <div v-if="getSeat(previewRoomKey, rIdx, cIdx).student" style="text-align:center;">
+                                                    <div class="s-id">{{ getSeat(previewRoomKey, rIdx, cIdx).student.sID }}</div>
+                                                    <div class="s-name">{{ getSeat(previewRoomKey, rIdx, cIdx).student.Name }}</div>
+                                                </div>
+                                            </div>
+                                            <div class="row-header">{{ rLabel }}</div>
+                                        </template>
+                                    </div>
+
+                                    <!-- 入口標示 (後) -->
+                                    <div v-if="rooms[previewRoomKey].entrancePos === 'back'" 
+                                        style="text-align:right; color:var(--danger); font-size:12px; margin:15px; font-weight:bold;"
+                                        :style="{textAlign: rooms[previewRoomKey].entrance === 'left' ? 'left' : 'right'}">
+                                        {{ rooms[previewRoomKey].entrance === 'left' ? '⬅ 入口位置（後）' : '入口位置（後） ⮕' }}
+                                    </div>
+                                </div>
+                            </transition>
+                        </div>
+                        <div class="notice" style="margin: 20px 0px 0px 0px;">
+                            預覽內容與匯出的 HTML 網頁檔相同。
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </transition>
+
+        <!-- 底部導航 -->
+        <div class="action-bar">
+
+            <button v-if="step === 2" class="btn btn-outline" @click="step--">⬅ 上一步（資料準備）</button>
+            <button v-else-if="step === 3" class="btn btn-outline" @click="step--">⬅ 上一步（場地佈局）</button>
+            <button v-else-if="step === 4" class="btn btn-outline" @click="step--">⬅ 上一步（分配規則）</button>
+            <div v-else></div> 
+            
+            <button v-if="step === 1" class="btn btn-primary" @click="goNext">下一步（場地佈局） ⮕</button>
+            <button v-if="step === 2" class="btn btn-primary" @click="goNext">下一步（分配規則） ⮕</button>
+            <button v-if="step === 3" class="btn btn-primary" @click="runAssignment">下一步（預覽與匯出） ⮕</button>
+
+            <div v-if="step === 4" style="display:flex; gap:20px;">
+                 <button class="btn btn-primary" @click="runAssignment">
+                    ↻ 重新執行分配（洗牌）
+                </button>
+                <button class="btn btn-outline-danger" @click="step=1; students=[]; rooms={}; initRooms();">
+                    ⚠ 重新開始（清空資料）
+                </button>
+            </div>
+        </div>
+    </div><!-- End of main-card -->
+
+    <!-- Footer outside main-card -->
+    <div class="footer">
+        <div style="display: inline-flex; align-items: center;">
+            © 2025 考場座位隨機分配系統 Release 1.3
+            <!-- <span class="badge" style="margin-left: 4px; padding: 1px 4px; font-size: 8px; border: 1px solid #6c757d;">BETA</span> -->
+        </div>
+        <div style="margin-top: 5px;">Alpha Lab | 
+            <a href="mailto:harper.17555@gmail.com">問題回報</a>
+        </div>
+    </div>
+</div><!-- End of app -->
+
+<script>
+const { createApp } = Vue;
+
+createApp({
+    data() {
+        return {
+            step: 1,
+            isDragActive: false,
+            errorMessage: '',
+            isReloading: false,
+            
+            // 考試資料
+            examInfo: { semester: '', title: '', date: '', startTime: '', endTime: '', note: '' },
+            students: [],
+            
+            // 教室資料
+            rooms: {},
+            roomQuotas: {}, // 手動配額
+            currentRoomKey: null, // 編輯中
+            previewRoomKey: null,    // 預覽中
+            customRoomCount: 0,
+            isLayoutAnimating: false,
+            animTarget: { key: null, type: null, index: -1, action: null },
+            roomSequence: 4,
+            
+            // 分配設定
+            assignConfig: { distribute: 'auto', seat: 'random' },
+            fillPrefs: { priority: 'row', rowDir: 'forward', colDir: 'left_right' },
+            
+            // 動畫變數
+            animStep: 0,
+            animTimer: null,
+            
+            exportType: 'none',
+
+            manualInput: { sID: '', Name: '' },
+            manualMsg: '',
+            manualMsgType: '',
+            sortType: 'import', // import, asc, desc, manual
+            importCounter: 1,   // 用來記錄匯入順序
+
+            // 匯出設定 (預設值：每頁 2 欄，每欄 25 列)
+            exportConfig: {
+                colsPerPage: 2,
+                rowsPerPage: 25
+            },
+            }
+    },
+    computed: {
+        totalAvailable() {
+            return Object.values(this.rooms)
+                .filter(r => r.selected)
+                .reduce((acc, r) => acc + (r.seats ? r.seats.filter(s => s.type === 1).length : 0), 0);
+        },
+        sortedRoomKeys() {
+            return Object.keys(this.rooms)
+                .filter(k => this.rooms[k].selected)
+                .sort((a,b) => this.rooms[a].order - this.rooms[b].order);
+        },
+        lastActiveRoomKey() {
+            const keys = this.sortedRoomKeys;
+            return keys.length > 0 ? keys[keys.length-1] : null;
+        },
+        autoAllocatedCount() {
+            // 計算最後一間教室需要容納多少人
+            let assigned = 0;
+            const last = this.lastActiveRoomKey;
+            this.sortedRoomKeys.forEach(k => {
+                if(k !== last) assigned += (this.roomQuotas[k] || 0);
+            });
+            return Math.max(0, this.students.length - assigned);
+        },
+        isOverloaded() {
+            if(!this.lastActiveRoomKey) return false;
+            // 隨機分配模式下，沒有手動配額，只看總數
+            if(this.assignConfig.distribute === 'auto') {
+                return this.students.length > this.totalAvailable;
+            }
+            return this.autoAllocatedCount > this.getRoomAvailable(this.lastActiveRoomKey);
+        },
+        totalAssigned() {
+            let count = 0;
+            Object.values(this.rooms).forEach(r => {
+                if(r.seats) count += r.seats.filter(s => s.student).length;
+            });
+            return count;
+        },
+        globalSigninList() {
+             let list = [];
+             this.sortedRoomKeys.forEach(k => {
+                 this.rooms[k].seats.forEach(s => {
+                     if(s.student) list.push(s.student);
+                 });
+             });
+             // 簽到表依學號排序
+             return list.sort((a,b) => a.sID.localeCompare(b.sID));
+        },
+        duplicateCount() {
+            return this.students.filter(s => s.isDuplicate).length;
+        }
+    },
+    watch: {
+        // 當設定改變時，重啟動畫
+        fillPrefs: {
+            handler() { this.startAnimation(); },
+            deep: true
+        },
+        step(val) {
+            // 1. 新增：切換步驟時，強制視窗捲動回最上方
+            window.scrollTo(0, 0);
+
+            // 2. 原有的動畫控制邏輯 (進入 Step 3 啟動動畫，離開則停止)
+            if(val === 3) this.startAnimation();
+            else this.stopAnimation();
+        },
+        // 監聽分流策略，切換到手動模式時，將配額預設為 0
+        'assignConfig.distribute'(val) {
+            if (val === 'sequential') {
+                this.sortedRoomKeys.forEach(key => {
+                    // 如果原本沒有值，或是切換模式時希望歸零，可在此設定
+                    // 這裡設定為 0，讓使用者重新輸入
+                    this.roomQuotas[key] = 0; 
+                });
+            }
+        }
+    },
+    methods: {
+        // --- Animation Control ---
+        startAnimation() {
+            this.stopAnimation();
+            this.animStep = 0;
+            this.animTimer = setInterval(() => {
+                this.animStep++;
+                if(this.animStep > 25) this.animStep = 0; // Loop with a pause
+            }, 120); // 動畫速度 120ms
+        },
+        stopAnimation() {
+            if(this.animTimer) clearInterval(this.animTimer);
+        },
+        getAnimOrder(n) {
+            const r = Math.floor(n / 5);
+            const c = n % 5;
+            let rVal = r, cVal = c;
+            if(this.fillPrefs.rowDir === 'backward') rVal = 4 - r;
+            if(this.fillPrefs.colDir === 'right_left') cVal = 4 - c;
+            
+            if(this.fillPrefs.priority === 'row') {
+                return rVal * 5 + cVal;
+            } else {
+                return cVal * 5 + rVal;
+            }
+        },
+
+        // --- Step 1: 檔案與資訊處理 ---
+        getFullTime() {
+             let str = this.examInfo.date;
+             if(this.examInfo.startTime) str += ` ${this.examInfo.startTime}`;
+             if(this.examInfo.endTime) str += ` - ${this.examInfo.endTime}`;
+             return str;
+        },
+        
+        handleFileSelect(e) { 
+            Array.from(e.target.files).forEach(f => this.parseFile(f));
+            e.target.value = ''; // Reset to allow same file re-upload
+        },
+        handleDrop(e) { 
+            this.isDragActive=false; 
+            Array.from(e.dataTransfer.files).forEach(f => this.parseFile(f));
+        },
+        parseFile(file) {
+            const name = file.name.toLowerCase();
+            if(name.endsWith('.csv')) {
+                Papa.parse(file, {
+                    header: false, skipEmptyLines: true,
+                    complete: (res) => this.processData(res.data)
+                });
+            } else if(name.endsWith('.xlsx') || name.endsWith('.xls')) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet, {header: 1});
+                    this.processData(jsonData);
+                };
+                reader.readAsArrayBuffer(file);
+            } else {
+                this.errorMessage = '僅支援 .csv 或 .xlsx 格式';
+            }
+        },
+        processData(rows) {
+            let newStudents = [];
+            
+            // 用來判斷是否為標題列的關鍵字
+            const headerKeywords = ['學號', 'id', 'ID', 'sid', '姓名', 'name', 'Name', 'NAME'];
+
+            rows.forEach(row => {
+                if(row.length >= 2) {
+                    const sID = String(row[0]).trim();
+                    const sName = String(row[1]).trim();
+                    
+                    // 1. 基本檢查：學號不能為空
+                    if (!sID) return;
+
+                    // 2. 過濾標題列：
+                    // 如果學號欄位包含 "學號/ID" 等字眼，或者學號太短且不是英數組合，通常是標題
+                    const isHeader = headerKeywords.some(k => sID.toLowerCase().includes(k));
+                    // 如果是標題列，跳過
+                    if (isHeader) return;
+
+                    // 3. 建立考生物件 (加入 _oid 以支援「匯入順序」排序)
+                    newStudents.push({ 
+                        sID: sID, 
+                        Name: sName, 
+                        isDuplicate: false,
+                        _oid: this.importCounter++ 
+                    });
+                }
+            });
+
+            // 4. 偵測本次匯入的重複項目 (並跳出 Alert)
+            const seen = new Set();
+            // 先載入舊名單的學號
+            this.students.forEach(s => seen.add(s.sID.toLowerCase()));
+            
+            let dupCountThisBatch = 0;
+            newStudents.forEach(s => {
+                const lowID = s.sID.toLowerCase();
+                if(seen.has(lowID)) {
+                    s.isDuplicate = true;
+                    dupCountThisBatch++;
+                } else {
+                    seen.add(lowID);
+                }
+            });
+
+            if(dupCountThisBatch > 0) {
+                alert(`⚠️ 偵測到 ${dupCountThisBatch} 筆重複的學號！`);
+            }
+
+            // 合併名單
+            this.students = [...this.students, ...newStudents];
+            
+            // 重新全域掃描重複 (確保新舊資料混合後的重複狀態正確)
+            this.markAllDuplicates();
+            
+            // 維持目前的排序設定
+            this.sortStudents(this.sortType); 
+            this.errorMessage = '';
+        },
+        onStudentUpdate() {
+            // 1. 編輯後立即重新檢查重複
+            this.markAllDuplicates();
+            
+            // 2. 如果希望編輯學號後自動重新排序 (例如原本是 A-Z)，可以把下面這行打開
+            // 但通常編輯中不希望行突然跳走，所以建議先不自動排序，等使用者自己按排序按鈕
+            // this.sortStudents(this.sortType); 
+        },
+        markAllDuplicates() {
+            const counts = {};
+            this.students.forEach(s => {
+                const k = s.sID.toLowerCase();
+                counts[k] = (counts[k] || 0) + 1;
+            });
+            this.students.forEach(s => {
+                // 只要出現超過一次，就標記為重複
+                s.isDuplicate = (counts[s.sID.toLowerCase()] > 1);
+            });
+        },
+        addManualStudent() {
+            const id = this.manualInput.sID.trim();
+            const name = this.manualInput.Name.trim();
+            
+            if(!id || !name) {
+                alert('請輸入完整學號與姓名'); // 改用 alert
+                return;
+            }
+
+            // 檢查是否已存在
+            if(this.students.some(s => s.sID.toLowerCase() === id.toLowerCase())) {
+                alert('此學號已存在名單中！'); // 改用 alert
+                return; 
+            }
+
+            this.students.push({
+                sID: id,
+                Name: name,
+                isDuplicate: false,
+                _oid: this.importCounter++ 
+            });
+            
+            // 清空輸入框並提示成功
+            this.manualInput.sID = '';
+            this.manualInput.Name = '';
+            
+            this.markAllDuplicates();
+            this.sortStudents(this.sortType);
+            
+            alert('新增成功！');
+        },
+        sortStudents(type) {
+            this.sortType = type;
+            if (type === 'manual') return; // 手動模式不自動排
+
+            if (type === 'asc') {
+                this.students.sort((a,b) => a.sID.localeCompare(b.sID));
+            } else if (type === 'desc') {
+                this.students.sort((a,b) => b.sID.localeCompare(a.sID));
+            } else if (type === 'import') {
+                this.students.sort((a,b) => a._oid - b._oid);
+            }
+        },
+        // 手動移動 (上/下)
+        moveStudent(index, dir) {
+            if (this.sortType !== 'manual') return;
+            const target = index + dir;
+            if (target < 0 || target >= this.students.length) return;
+            
+            // Swap
+            const temp = this.students[index];
+            this.students[index] = this.students[target];
+            this.students[target] = temp;
+        },
+        // HTML 匯出功能
+        downloadHTML(type) {
+            let suffix = '';
+            if (type === 'seat') suffix = '座位表';
+            else if (type === 'signin_global') suffix = '總簽到表';
+            else if (type === 'signin_room') suffix = '考場簽到表';
+
+            const contentHeader = `${this.examInfo.semester} ${this.examInfo.title}`;
+            const displayTitle = `${contentHeader} ${suffix}`;
+            const safeFilename = `${this.examInfo.semester}_${this.examInfo.title}_${suffix}`;
+            const timeStr = this.getFullTime();
+            
+            let content = '';
+            
+            const style = `
+                <style>
+                    body { font-family: "Microsoft JhengHei", sans-serif; padding: 20px; }
+                    h1, h2, h3 { text-align: center; margin: 5px 0; }
+                    .page-break { page-break-after: always; display: block; clear: both; margin-bottom: 20px; border-bottom: 1px dashed #ccc; padding-bottom: 20px;}
+                    
+                    /* 網格容器 */
+                    .grid-container { 
+                        display: flex; 
+                        flex-direction: column; 
+                        align-items: center; 
+                        margin-top: 20px; 
+                    }
+                    
+                    /* 網格包裝器：設為 inline-flex 讓寬度貼齊網格，以便絕對定位箭頭 */
+                    .grid-wrapper { 
+                        display: inline-flex; 
+                        flex-direction: column; 
+                        width: auto;
+                        position: relative;
+                    }
+                    
+                    /* 入口列佔位容器 */
+                    .entrance-row {
+                        height: 24px; 
+                        width: 100%;
+                        position: relative;
+                        margin: 20px 0px 20px 0px;
+                    }
+                    .entrance-row.bottom {
+                    }
+
+                    /* 入口標記本體 */
+                    .entrance-marker {
+                        position: absolute;
+                        font-weight: bold;
+                        color: #dc3545;
+                        font-size: 12px;
+                        white-space: nowrap;
+                        line-height: 24px;
+                    }
+                    
+                    .grid { display: grid; gap: 4px; justify-content: center; } 
+                    .seat { 
+                        border: 1px solid #333; display: flex; flex-direction: column; 
+                        align-items: center; justify-content: center; padding: 2px;
+                        width: 60px; height: 40px; font-size: 12px; background: #fff;
+                    }
+                    .seat.aisle { border: none; visibility: hidden; }
+                    .seat .sid { font-weight: bold; font-size: 12px; }
+                    .seat .name { font-size: 11px; white-space: nowrap; overflow: hidden; }
+                    .header-cell { text-align: center; font-weight: bold; font-size: 11px; padding: 2px; color: #666; }
+                    .header-cell.aisle-label { color: #ccc; }
+                    
+                    table.signin { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+                    table.signin th, table.signin td { border: 1px solid #000; padding: 5px; text-align: center; height: 30px; }
+                    table.signin th { background: #f0f0f0; }
+                    .flex-row { display: flex; gap: 20px; justify-content: center; }
+                    .flex-col { flex: 1; }
+                    @media print {
+                        .page-break { border-bottom: none; height: 0; margin: 0; }
+                        body { padding: 0; }
+                    }
+                </style>
+            `;
+
+            if (type === 'seat') {
+                this.sortedRoomKeys.forEach(key => {
+                    const room = this.rooms[key];
+                    const count = this.countAssigned(key);
+                    
+                    // Grid Style
+                    let gridTemplateColumns = `30px `; 
+                    room.colSpecs.forEach(c => gridTemplateColumns += c === 1 ? '60px ' : '20px ');
+                    gridTemplateColumns += '30px';
+                    let gridTemplateRows = `auto `; 
+                    room.rowSpecs.forEach(r => gridTemplateRows += r === 1 ? '40px ' : '20px ');
+                    const gridStyle = `grid-template-columns: ${gridTemplateColumns}; grid-template-rows: ${gridTemplateRows};`;
+
+                    // [修改] 生成入口 HTML (整合文字與方向)
+                    const isLeft = room.entrance === 'left';
+                    const posText = room.entrancePos === 'front' ? '(前)' : '(後)';
+                    const labelText = `入口位置 ${posText}`; // 完整文字
+                    
+                    // 根據左右決定樣式：左側靠左，右側靠右
+                    const posStyle = isLeft ? 'left: 0; padding-left:10px;' : 'right: 0; padding-right:10px;';
+                    
+                    // 根據左右決定箭頭位置：左側箭頭在字前，右側箭頭在字後
+                    // 左：⬅ 入口位置 (前)
+                    // 右：入口位置 (前) ⮕
+                    const contentHTML = isLeft ? `⬅ ${labelText}` : `${labelText} ⮕`;
+                    
+                    let topRowHTML = `<div class="entrance-row"></div>`; 
+                    let bottomRowHTML = `<div class="entrance-row bottom"></div>`; 
+
+                    if (room.entrancePos === 'front') {
+                        topRowHTML = `
+                            <div class="entrance-row">
+                                <div class="entrance-marker" style="${posStyle}">
+                                    ${contentHTML}
+                                </div>
+                            </div>`;
+                    } else {
+                        bottomRowHTML = `
+                            <div class="entrance-row bottom">
+                                <div class="entrance-marker" style="${posStyle}">
+                                    ${contentHTML}
+                                </div>
+                            </div>`;
+                    }
+
+                    // 生成座位 HTML
+                    let cells = '<div></div>'; 
+                    room.headers.forEach(h => {
+                        const extraClass = h === '走道' ? ' aisle-label' : '';
+                        cells += `<div class="header-cell${extraClass}">${h}</div>`;
+                    });
+                    cells += '<div></div>'; 
+
+                    room.rowHeaders.forEach((rLabel, rIdx) => {
+                        const rClass = rLabel === '走道' ? ' aisle-label' : '';
+                        cells += `<div class="header-cell${rClass}">${rLabel}</div>`;
+                        room.colSpecs.forEach((colSpec, cIdx) => {
+                            const seat = this.getSeat(key, rIdx, cIdx);
+                            if (colSpec === 0 || room.rowSpecs[rIdx] === 0) cells += `<div class="seat aisle"></div>`;
+                            else if (seat.type === 2) cells += `<div class="seat" style="background:#eee; color:#ccc;">✕</div>`;
+                            else {
+                                if (seat.student) cells += `<div class="seat"><div class="sid">${seat.student.sID}</div><div class="name">${seat.student.Name}</div></div>`;
+                                else cells += `<div class="seat"><div style="color:#ccc; font-size:9px;">${seat.coordStr}</div></div>`;
+                            }
+                        })
+                        cells += `<div class="header-cell${rClass}">${rLabel}</div>`;
+                    });
+
+                    content += `
+                        <div class="page-break">
+                            <h2>${contentHeader}</h2>
+                            <h3>【${room.name}】座位表</h3>
+                            
+                            <div style="text-align:center; font-size: 14px; margin-bottom: 10px;">
+                                <span>考場人數：${count} 人</span>
+                                ${timeStr ? `<span style="margin-left: 30px;">考試時間：${timeStr}</span>` : ''}
+                            </div>
+
+                            <div class="grid-container">
+                                <div class="grid-wrapper">
+                                    ${topRowHTML}
+                                    <div class="grid" style="${gridStyle}">
+                                        ${cells}
+                                    </div>
+                                    ${bottomRowHTML}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+            } else {
+                // (簽到表匯出邏輯保持不變)
+                const generateSigninPage = (list, subtitle) => {
+                    const pages = this.getPagedList(list);
+                    const totalPages = pages.length;
+
+                    let html = '';
+                    
+                    // 計算每欄寬度百分比，減去一點間隙 (gap) 避免擠下去
+                    const colWidth = (100 / this.exportConfig.colsPerPage) - 1;
+
+                    pages.forEach(p => {
+                        // 產生每一欄的 HTML
+                        let columnsHTML = '';
+                        p.columns.forEach((colData, colIndex) => {
+                            let rows = '';
+                            // 計算該欄第一筆資料的起始座號
+                            // 公式：(頁碼-1)*每頁總數 + (欄碼)*每欄列數 + 1
+                            const startNo = (p.pageIndex - 1) * (this.exportConfig.rowsPerPage * this.exportConfig.colsPerPage) + (colIndex * this.exportConfig.rowsPerPage) + 1;
+
+                            colData.forEach((s, i) => {
+                                if (!s.empty) {
+                                    rows += `<tr><td>${startNo + i}</td><td>${s.sID}</td><td>${s.Name}</td><td></td></tr>`;
+                                } else {
+                                    rows += `<tr><td>&nbsp;</td><td></td><td></td><td></td></tr>`;
+                                }
+                            });
+                            
+                            columnsHTML += `
+                                <div class="flex-col" style="flex: 0 0 ${colWidth}%; max-width: ${colWidth}%;">
+                                    <table class="signin">
+                                        <thead><tr><th width="12%">No.</th><th width="25%">學號</th><th width="25%">姓名</th><th width="38%">簽名</th></tr></thead>
+                                        <tbody>${rows}</tbody>
+                                    </table>
+                                </div>
+                            `;
+                        });
+
+                        html += `
+                            <div class="page-break">
+                                <h2>${contentHeader}</h2>
+                                <h3>${subtitle}（第 ${p.pageIndex} 頁 / 共 ${totalPages} 頁）</h3>
+                                ${timeStr ? `<p style="text-align:center;margin:0 0 10px 0;font-size:12px;">考試時間：${timeStr}</p>` : ''}
+                                <div class="flex-row" style="gap: 2%;">
+                                    ${columnsHTML}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    return html;
+                };
+                if (type === 'signin_global') content = generateSigninPage(this.students, '總簽到表');
+                else {
+                    this.sortedRoomKeys.forEach(key => {
+                        const list = this.getRoomAssignedList(key);
+                        if (list.length > 0) content += generateSigninPage(list, `${this.rooms[key].name} 簽到表`);
+                    });
+                }
+            }
+
+            const fullHTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${displayTitle}</title>${style}</head><body>${content}</body></html>`;
+            const blob = new Blob([fullHTML], { type: 'text/html' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${safeFilename}.html`; 
+            link.click();
+        },
+        removeDuplicates() {
+            if(!confirm(`確定要移除所有重複的考生資料嗎？\n(將保留第一筆，刪除後續重複項目)`)) return;
+            
+            const seen = new Set();
+            const unique = [];
+            
+            // 這裡建議先依照「匯入順序」或「學號」穩定排序後再過濾，
+            // 避免因為當前顯示排序不同而刪錯人。
+            // 這裡暫時依照當前列表順序保留第一筆。
+            this.students.forEach(s => {
+                const k = s.sID.toLowerCase();
+                if(!seen.has(k)) {
+                    seen.add(k);
+                    s.isDuplicate = false; // 清除標記
+                    unique.push(s);
+                }
+            });
+            
+            this.students = unique;
+            alert('已移除重複資料！');
+        },
+        removeStudent(idx) {
+            const s = this.students[idx];
+            // 跳出確認視窗，若按「取消」則 return 中斷執行
+            if(!confirm(`確定要刪除考生「${s.sID} ${s.Name}」嗎？`)) return;
+            
+            this.students.splice(idx, 1);
+            this.markAllDuplicates();
+        },
+        clearStudents() {
+            if(confirm('確定要清空所有名單嗎？')) this.students = [];
+        },
+
+        // --- Step 2: 教室管理邏輯 ---
+        initRooms() {
+            // 預設教室配置
+            this.rooms = {};
+            
+            // Room 1 (電腦教室 1): 14 cols (4-1-4-1-4), 6 rows
+            this.rooms['room1'] = {
+                selected: false, order: 1, name: '電腦教室 1',
+                rowSpecs: Array(6).fill(1),
+                colSpecs: [1,1,1,1, 0, 1,1,1,1, 0, 1,1,1,1],
+                seats: [], headers: [], rowHeaders: [],
+                entrance: 'right', entrancePos: 'front', numberingType: 'normal'
+            };
+
+            // Room 2 (電腦教室 2): 14 cols (4-1-4-1-4), 6 rows
+            this.rooms['room2'] = {
+                selected: false, order: 2, name: '電腦教室 2',
+                rowSpecs: Array(6).fill(1),
+                colSpecs: [1,1,1,1, 0, 1,1,1,1, 0, 1,1,1,1],
+                seats: [], headers: [], rowHeaders: [],
+                entrance: 'right', entrancePos: 'front', numberingType: 'normal'
+            };
+
+            // Room 3 (研討教室 6): 
+            let colSpecs3 = [];
+            for(let i=0; i<15; i++) colSpecs3.push(i % 2 === 0 ? 1 : 0);
+            
+            this.rooms['room3'] = {
+                selected: false, order: 3, name: '研討教室 6',
+                rowSpecs: Array(8).fill(1),
+                colSpecs: colSpecs3,
+                seats: [], headers: [], rowHeaders: [],
+                entrance: 'right', entrancePos: 'front', numberingType: 'normal'
+            };
+
+            // 初始化佈局
+            ['room1', 'room2', 'room3'].forEach(k => {
+                this.regenerateRoom(k);
+                
+                // 特殊規則：電腦教室1 & 電腦教室2 的第6排前4個座位 (1-6, 2-6, 3-6, 4-6) 預設為禁用
+                if (k === 'room1' || k === 'room2') {
+                    // 第6排索引為 5
+                    const rIdx = 5;
+                    // 前4個座位索引為 0, 1, 2, 3 (colSpecs 為 1 的位置)
+                    // 由於 colSpecs 前4個都是1，所以 cIdx 也是 0,1,2,3
+                    [0, 1, 2, 3].forEach(cIdx => {
+                        const s = this.getSeat(k, rIdx, cIdx);
+                        if (s) s.type = 2; // 2 = blocked
+                    });
+                }
+            });
+            this.currentRoomKey = 'room1';
+
+            // 重置計數器 (因為預設有 3 間，下一個編號從 4 開始)
+            this.roomSequence = 4;
+        },
+        
+        createRoomObj(order, name, r, c) {
+            return {
+                selected: true, order, name,
+                rowSpecs: Array(r).fill(1), colSpecs: Array(c).fill(1),
+                seats: [], headers: [], rowHeaders: [],
+                entrance: 'right', entrancePos: 'front', numberingType: 'normal'
+            };
+        },
+        addCustomRoom() {
+            // 使用計數器產生唯一順序號
+            const order = this.roomSequence++; 
+            
+            // 使用隨機字串當作 key 避免 key 重複 (雖然機率極低，但比較保險)
+            const key = `custom_${Date.now()}`;
+            
+            this.rooms[key] = {
+                selected: true, 
+                order: order, // 使用唯一編號
+                name: `自訂考場 ${order}`,
+                rowSpecs: Array(6).fill(1), 
+                colSpecs: Array(8).fill(1),
+                seats: [], headers: [], rowHeaders: [],
+                entrance: 'right', entrancePos: 'front', numberingType: 'normal'
+            };
+            this.regenerateRoom(key);
+            this.currentRoomKey = key; // 自動切換到新考場
+            
+            // 捲動到最右邊
+            this.$nextTick(() => {
+                const container = document.querySelector('.room-slides-container');
+                if(container) container.scrollLeft = container.scrollWidth;
+            });
+        },
+        removeRoom(key) {
+            if(confirm(`確定要刪除「${this.rooms[key].name}」嗎？`)) {
+                delete this.rooms[key];
+                delete this.roomQuotas[key];
+                const keys = Object.keys(this.rooms);
+                this.currentRoomKey = keys.length > 0 ? keys[0] : null;
+            }
+        },
+        moveOrder(key, direction) {
+            const keys = this.sortedRoomKeys;
+            const idx = keys.indexOf(key);
+            if (idx === -1) return;
+            const targetIdx = idx + direction;
+            if (targetIdx < 0 || targetIdx >= keys.length) return;
+            
+            const otherKey = keys[targetIdx];
+            // Swap order
+            const temp = this.rooms[key].order;
+            this.rooms[key].order = this.rooms[otherKey].order;
+            this.rooms[otherKey].order = temp;
+        },
+
+        // --- 佈局生成邏輯 ---
+        regenerateRoom(key, preserve = false, shiftRow = 0, shiftCol = 0) {
+            const room = this.rooms[key];
+            
+            // 1. 記錄被停用的座位 (Blocked Seats)
+            // 將舊座標加上偏移量，映射到新座標
+            const blocked = new Set();
+            if(preserve && room.seats) {
+                room.seats.forEach(s => {
+                    if(s.type === 2) {
+                        blocked.add(`${s.rIdx + shiftRow},${s.cIdx + shiftCol}`);
+                    }
+                });
+            }
+
+            const seats = [];
+            const headers = [];
+            const rowHeaders = [];
+            
+            // 2. 生成行標題 (Headers)
+            let seatColCount = 0;
+            const totalSeatCols = room.colSpecs.filter(x => x===1).length;
+            const isLtoR = room.numberingType === 'normal';
+
+            room.colSpecs.forEach(spec => {
+                if(spec === 0) headers.push('走道');
+                else {
+                    seatColCount++;
+                    headers.push(isLtoR ? seatColCount : (totalSeatCols - seatColCount + 1));
+                }
+            });
+            room.headers = headers;
+
+            // 3. 生成列標題 (Row Headers)
+            let seatRowCount = 0;
+            room.rowSpecs.forEach(spec => {
+                if(spec === 0) rowHeaders.push('走道');
+                else {
+                    seatRowCount++;
+                    rowHeaders.push(seatRowCount);
+                }
+            });
+            room.rowHeaders = rowHeaders;
+
+            // 4. 生成座位矩陣
+            let logicalRow = 0;
+            for(let r=0; r < room.rowSpecs.length; r++) {
+                if(room.rowSpecs[r]===1) logicalRow++;
+                let logicalCol = 0;
+                
+                for(let c=0; c < room.colSpecs.length; c++) {
+                    // 預設型態：如果是行列規格設為0，就是走道(0)，否則為座位(1)
+                    let type = (room.rowSpecs[r]===0 || room.colSpecs[c]===0) ? 0 : 1;
+                    
+                    // 如果原本是座位(1)，檢查是否在 blocked 清單中，是則改為停用(2)
+                    if(preserve && type===1 && blocked.has(`${r},${c}`)) type = 2;
+
+                    let coordStr = '';
+                    if(room.colSpecs[c]===1) {
+                        logicalCol++;
+                        if(type !== 0) {
+                            let displayCol = isLtoR ? logicalCol : (totalSeatCols - logicalCol + 1);
+                            coordStr = `${displayCol}-${logicalRow}`;
+                        }
+                    }
+
+                    seats.push({ rIdx: r, cIdx: c, type, coordStr, student: null });
+                }
+            }
+            room.seats = seats;
+        },
+
+        // --- 佈局編輯操作 ---
+        // 輔助函式：取得該格子應用的動畫 Class
+        getAnimClass(key, type, idx) {
+            const t = this.animTarget;
+            if (t.key !== key || t.type !== type) return '';
+            
+            // 判斷索引是否匹配
+            if (t.index !== idx) return '';
+
+            // 回傳對應的 Class
+            if (t.action === 'del') return 'fading-out';
+            if (t.action === 'add') return 'pop-in';
+            return '';
+        },
+        // 捲動輔助函式
+        scrollToTarget(r, action) {
+            this.$nextTick(() => {
+                const container = document.querySelector('.grid-editor-wrapper');
+                if (!container) return;
+
+                if (action.includes('Row')) {
+                    // 橫列：永遠捲到底部
+                    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+                } 
+                else if (action.includes('Col')) {
+                    // 直行：依編號方向決定
+                    if (r.numberingType === 'normal') {
+                        container.scrollTo({ left: container.scrollWidth, behavior: 'smooth' });
+                    } else {
+                        container.scrollTo({ left: 0, behavior: 'smooth' });
+                    }
+                }
+            });
+        },
+        // 佈局操作 (含新增/刪除雙向動畫)
+        modifyLayout(key, action) {
+            if (this.isLayoutAnimating) return;
+
+            const r = this.rooms[key];
+            let targetIndex = -1;
+            let targetType = action.includes('Row') ? 'row' : 'col';
+            
+            // 用來計算舊資料的位移量
+            let shiftRow = 0;
+            let shiftCol = 0;
+
+            if (action.startsWith('add')) {
+                if(action==='addRow') {
+                    if (r.rowSpecs.length >= 30) return;
+                    r.rowSpecs.push(1);
+                    targetIndex = r.rowSpecs.length - 1;
+                    // 往下加，舊資料不用動 (shiftRow = 0)
+                }
+                else if(action==='addCol') {
+                    if (r.colSpecs.length >= 30) return;
+                    
+                    if (r.numberingType === 'normal') {
+                        // 1->N (往右加)
+                        r.colSpecs.push(1);
+                        targetIndex = r.colSpecs.length - 1;
+                        // 舊資料不用動
+                    } else {
+                        // N<-1 (往左加)
+                        r.colSpecs.unshift(1);
+                        targetIndex = 0;
+                        // [關鍵修正] 舊資料要全部往右移 1 格，讓出左邊給新行
+                        shiftCol = 1; 
+                    }
+                }
+                
+                // 傳入 shiftCol
+                this.regenerateRoom(key, true, shiftRow, shiftCol);
+                
+                // 動畫與捲動
+                this.isLayoutAnimating = true;
+                this.animTarget = { key, type: targetType, index: targetIndex, action: 'add' };
+                this.scrollToTarget(r, action);
+
+                setTimeout(() => {
+                    this.isLayoutAnimating = false;
+                    this.animTarget = { key: null, type: null, index: -1, action: null };
+                }, 300);
+            }
+
+            // --- 刪除邏輯 ---
+            else if (action.startsWith('del')) {
+                if(action==='delRow') {
+                    if (r.rowSpecs.length <= 1) return;
+                    targetIndex = r.rowSpecs.length - 1;
+                }
+                else if(action==='delCol') {
+                    if (r.colSpecs.length <= 1) return;
+                    targetIndex = (r.numberingType === 'normal') ? r.colSpecs.length - 1 : 0;
+                }
+
+                this.isLayoutAnimating = true;
+                this.animTarget = { key, type: targetType, index: targetIndex, action: 'del' };
+                this.scrollToTarget(r, action);
+
+                setTimeout(() => {
+                    if (action === 'delRow') r.rowSpecs.pop();
+                    if (action === 'delCol') {
+                        if (r.numberingType === 'normal') {
+                            r.colSpecs.pop();
+                        } else {
+                            r.colSpecs.shift();
+                            shiftCol = -1; 
+                        }
+                    }
+                    
+                    // 傳入 shiftCol
+                    this.regenerateRoom(key, true, 0, shiftCol);
+
+                    this.isLayoutAnimating = false;
+                    this.animTarget = { key: null, type: null, index: -1, action: null };
+                }, 300);
+            }
+        },
+        toggleColType(key, idx) {
+            this.rooms[key].colSpecs[idx] = this.rooms[key].colSpecs[idx]===1 ? 0 : 1;
+            this.regenerateRoom(key, true);
+        },
+        toggleRowType(key, idx) {
+            this.rooms[key].rowSpecs[idx] = this.rooms[key].rowSpecs[idx]===1 ? 0 : 1;
+            this.regenerateRoom(key, true);
+        },
+        toggleSeat(key, r, c) {
+            const s = this.getSeat(key, r, c);
+            if(s.type === 1) s.type = 2;
+            else if(s.type === 2) s.type = 1;
+        },
+        // 切換編號方向
+        toggleNumberingType(key) {
+            const room = this.rooms[key];
+            
+            room.numberingType = room.numberingType === 'normal' ? 'inverse' : 'normal';
+            
+            this.regenerateRoom(key, true); 
+            this.$nextTick(() => {
+                this.animateHeaders(key); 
+            });
+        },
+        // 逐一觸發直行編號動畫
+        animateHeaders(key) {
+            const room = this.rooms[key];
+            const animatedElements = []; 
+
+            // 1. 找出所有座位行的 DOM 元素及其顯示編號
+            for(let idx = 0; idx < room.headers.length; idx++) {
+                const h = room.headers[idx];
+                if (h !== '走道') {
+                    const num = parseInt(h);
+                    // 根據 HTML 裡設定的 ID 格式尋找元素
+                    const el = document.getElementById(`col-h-${key}-${idx}`); 
+                    if (el) {
+                        animatedElements.push({ num, el });
+                    }
+                }
+            }
+
+            // 2. 依據編號排序 (從小到大)
+            animatedElements.sort((a, b) => a.num - b.num);
+
+            // 3. 逐一執行動畫
+            let delay = 0;
+            animatedElements.forEach(({ el }, index) => {
+                setTimeout(() => {
+                    // 加上動畫 Class
+                    el.classList.add('header-pulse');
+                    
+                    // 0.6 秒後移除 Class (確保動畫可重複觸發)
+                    setTimeout(() => {
+                        el.classList.remove('header-pulse');
+                    }, 600); 
+
+                }, delay);
+                delay += 80; // 每個元素間隔 80 毫秒
+            });
+        },
+        toggleEntrance(key) {
+            this.rooms[key].entrance = this.rooms[key].entrance==='right'?'left':'right';
+        },
+        toggleEntrancePos(key) {
+             this.rooms[key].entrancePos = this.rooms[key].entrancePos==='front'?'back':'front';
+        },
+        
+        getSeat(key, r, c) {
+            const room = this.rooms[key];
+            return room.seats[r * room.colSpecs.length + c] || {type:0};
+        },
+        getGridStyle(key) {
+            const room = this.rooms[key];
+            if (!room) return {}; // 防呆
+
+            // 1. 設定欄寬 (直行)
+            const cols = room.colSpecs.map(s => s===1 ? 'var(--seat-w)' : 'var(--aisle-w)').join(' ');
+            
+            // 2. [新增] 設定列高 (橫列)
+            // 第一列是「行標題(1,2,3...)」，設為 auto
+            // 後續每一列依照 rowSpecs 設定：1為座位高度，0為走道寬度(讓它變扁)
+            const rows = room.rowSpecs.map(s => s===1 ? 'var(--seat-h)' : 'var(--aisle-w)').join(' ');
+
+            return { 
+                gridTemplateColumns: `var(--row-label-w) ${cols} var(--row-label-w)`,
+                gridTemplateRows: `auto ${rows}` // 加上 auto 是為了保留給最上方的行標題
+            };
+        },
+        getRoomAvailable(key) {
+            return this.rooms[key].seats ? this.rooms[key].seats.filter(s => s.type===1).length : 0;
+        },
+        getRoomCapacity(key) {
+            return this.rooms[key].seats ? this.rooms[key].seats.length : 0;
+        },
+        countAssigned(key) {
+             return this.rooms[key].seats ? this.rooms[key].seats.filter(s=>s.student).length : 0;
+        },
+        
+        checkQuota(key) {
+            const capacity = this.getRoomAvailable(key);
+            let otherAssigned = 0;
+            const last = this.lastActiveRoomKey;
+            this.sortedRoomKeys.forEach(k => {
+                if (k !== last && k !== key) {
+                    otherAssigned += (this.roomQuotas[k] || 0);
+                }
+            });
+            const remainingStudents = Math.max(0, this.students.length - otherAssigned);
+            const trueLimit = Math.min(capacity, remainingStudents);
+            if (this.roomQuotas[key] > trueLimit) {
+                this.roomQuotas[key] = trueLimit;
+            }
+        },
+
+        // --- 流程控制 ---
+        goNext() {
+            if(this.step===1 && this.students.length===0) {
+                alert('請先新增考生名單'); return;
+            }
+            if(this.step===2) {
+                if(this.sortedRoomKeys.length === 0) {
+                    alert('請在「考場啟用」中至少勾選一間考場'); return;
+                }
+                if(this.totalAvailable < this.students.length) {
+                    alert(`座位數量不足，尚缺 ${this.students.length - this.totalAvailable} 個座位！\n請啟用更多考場或增加座位。`); 
+                    return;
+                }
+                
+                // 進到 Step 3 前，檢查並修正手動配額 (避免容量減少後，配額卻還在)
+                this.sortedRoomKeys.forEach(key => {
+                    const capacity = this.getRoomAvailable(key);
+                    // 如果配額尚未設定(undefined) 或 超過容量，強制修正
+                    if (this.roomQuotas[key] === undefined || this.roomQuotas[key] > capacity) {
+                        this.roomQuotas[key] = 0; // 或者設為 capacity，視需求而定，設為 0 較保險
+                    }
+                });
+
+                if (this.sortedRoomKeys.length === 1) {
+                    this.assignConfig.distribute = 'auto';
+                }
+
+                this.previewRoomKey = this.sortedRoomKeys[0];
+            }
+            this.step++;
+        },
+
+        // --- Step 3: 分配執行 ---
+        getAutoCount(targetKey) {
+            let remaining = this.students.length;
+            
+            // 依照教室順序扣除
+            for (const key of this.sortedRoomKeys) {
+                const capacity = this.getRoomAvailable(key);
+                // 該教室分配數 = 剩餘人數 與 該教室容量 取最小值
+                const assign = Math.min(remaining, capacity);
+                
+                if (key === targetKey) return assign;
+                
+                remaining -= assign;
+            }
+            return 0;
+        },
+
+        runAssignment() {
+            if(this.isOverloaded) {
+                alert('人數配置錯誤，請檢查配額設定'); return;
+            }
+
+            // 1. 清空座位
+            Object.values(this.rooms).forEach(r => r.seats.forEach(s => s.student = null));
+
+            // 2. 準備名單池
+            let pool = [...this.students];
+
+            // 3. 準備目標座位
+            let targets = [];
+            this.sortedRoomKeys.forEach(key => {
+                let validSeats = this.rooms[key].seats.filter(s => s.type === 1);
+                const p = this.fillPrefs;
+                validSeats.sort((a,b) => {
+                    let rA=a.rIdx, rB=b.rIdx, cA=a.cIdx, cB=b.cIdx;
+                    if(p.rowDir === 'backward') { rA = -rA; rB = -rB; }
+                    if(p.colDir === 'right_left') { cA = -cA; cB = -cB; }
+                    if(p.priority === 'row') return rA !== rB ? rA - rB : cA - cB;
+                    else return cA !== cB ? cA - cB : rA - rB;
+                });
+                targets.push({ key, seats: validSeats });
+            });
+
+            // 4. 填入
+            let currentIdx = 0;
+            targets.forEach(t => {
+                // 計算該教室要拿多少人 (limit)
+                let limit = 0;
+                
+                if(this.assignConfig.distribute === 'auto') {
+                    // 該教室的配額 = 該教室的總座位數
+                    // 系統會從 pool 依序取出這麼多人填滿它
+                    limit = t.seats.length;
+                } else {
+                    // 手動指定模式
+                    if(t.key === this.lastActiveRoomKey) limit = 99999;
+                    else limit = this.roomQuotas[t.key] || 0;
+                }
+
+                // 切割子名單
+                let subPool = pool.slice(currentIdx, currentIdx + limit);
+                currentIdx += subPool.length;
+
+                // [入座階段] 決定是否要打亂
+                if(this.assignConfig.seat === 'random') {
+                    subPool = this.shuffle(subPool);
+                }
+
+                // 填入座位
+                for(let i=0; i<subPool.length && i<t.seats.length; i++) {
+                    t.seats[i].student = subPool[i];
+                }
+            });
+
+            // 過場動畫與跳轉
+            if (this.step === 4) {
+                this.isReloading = true;
+                setTimeout(() => {
+                    window.scrollTo(0, 0);
+                    this.isReloading = false;
+                }, 300);
+            } else {
+                this.step = 4;
+            }
+            this.previewRoomKey = this.sortedRoomKeys[0];
+        },
+        shuffle(arr) {
+            return arr.sort(() => Math.random() - 0.5);
+        },
+
+        // --- Step 4: 匯出 ---
+        getRoomAssignedList(key) {
+            let list = [];
+            if(this.rooms[key].seats) {
+                this.rooms[key].seats.forEach(s => {
+                    if(s.student) list.push(s.student);
+                });
+            }
+            return list.sort((a,b) => a.sID.localeCompare(b.sID));
+        },
+        getRoomSplitStudents(key) {
+            let list = this.getRoomAssignedList(key);
+            const half = Math.ceil(list.length / 2);
+            return [list.slice(0, half), list.slice(half)];
+        },
+        getPagedList(students) {
+            // 排序
+            const sorted = [...students].sort((a, b) => a.sID.localeCompare(b.sID));
+            
+            // [修改] 從設定讀取變數
+            const rowsPerPage = this.exportConfig.rowsPerPage || 25;
+            const colsPerPage = this.exportConfig.colsPerPage || 2;
+            
+            const itemsPerPage = rowsPerPage * colsPerPage; 
+            
+            const pages = [];
+            
+            for (let i = 0; i < sorted.length; i += itemsPerPage) {
+                const pageItems = sorted.slice(i, i + itemsPerPage);
+                
+                // 依據欄數切割資料
+                const columns = [];
+                for(let c = 0; c < colsPerPage; c++) {
+                    const start = c * rowsPerPage;
+                    const end = start + rowsPerPage;
+                    const colData = pageItems.slice(start, end);
+                    
+                    // 補空行 (確保表格高度一致)
+                    while (colData.length < rowsPerPage) colData.push({ empty: true });
+                    
+                    columns.push(colData);
+                }
+
+                pages.push({ 
+                    pageIndex: pages.length + 1,
+                    columns: columns // [修改] 這裡改為儲存欄位陣列，不再只是 left/right
+                });
+            }
+            return pages;
+        },
+    },
+    mounted() {
+        this.initRooms();
+    }
+}).mount('#app');
+</script>
+</body>
+</html>
